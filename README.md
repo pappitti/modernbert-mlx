@@ -29,4 +29,4 @@ Examples of inference pipelines are presented in tests_maskedlm.py and tests_sen
 
 ## Inspiration
 - [MLX Examples](https://github.com/ml-explore/mlx-examples) by Apple, is the source of the utils for this project (see licence)
-- [mlx-embeddings](https://github.com/Blaizzy/mlx-embeddings) by Prince Canuma whose project, supporting BERT and xml-ropert, has been more than helpful to get started with this one 
+- [mlx-embeddings](https://github.com/Blaizzy/mlx-embeddings) by Prince Canuma whose project, supporting BERT and xml-roberta, has been more than helpful to get started with this one 
