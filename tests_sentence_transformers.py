@@ -1,14 +1,10 @@
 import mlx.core as mx
 from utils import load
 
-'''
-answerdotai/ModernBERT-base IS NOT TRAINED FOR SENTENCE SIMILARITY
-SEE TESTS_SENTENCE_TRANSFORMERS.PY FOR MODELS TRAINED TO GENERATE EMBEDDINGS FOR SENTENCE TRANSFORMERS
-'''
-
 def main():
     # Load the model and tokenizer
-    model, tokenizer = load("answerdotai/ModernBERT-base", pipeline="embeddings") #answerdotai/ModernBERT-base
+    model_name = "tasksource/ModernBERT-base-embed" #makiart/ft-modern-bert-emb-all-nli, tasksource/ModernBERT-base-embed 
+    model, tokenizer = load(model_name, pipeline="sentence_transformers") 
     max_position_embeddings = getattr(model.config,"max_position_embeddings",512)
     print(max_position_embeddings)
 
@@ -53,7 +49,7 @@ def main():
             similarity_matrix[i, j] = cosine_similarity(embeddings[i], embeddings[j])
 
     # Print the similarity matrix as a table
-    print("\nCosine Similarity Matrix:")
+    print(f"\nCosine Similarity Matrix: {model_name}")
     print("-" * 40)
     print("    ", end="")
     for i in range(n):

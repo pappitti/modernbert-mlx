@@ -471,6 +471,22 @@ class Model(nn.Module):
         return sanitized_weights
 
 ### below are the classes for specific usecases
+class ModelForSentenceTransformers(Model):
+    def sanitize(self, weights):
+        """Convert sentence transformer weights to ModernBERT format.
+        Then use the call method of the parent class to get the embeddings."""
+        sanitized_weights = {}
+        
+        for k, v in weights.items():
+            if "position_ids" in k:
+                ### used this from another model, may need to change
+                # Remove unused position_ids
+                continue
+            else:
+                new_key = "model." + k
+                sanitized_weights[new_key] = v
+        return sanitized_weights
+
 class ModernBertPredictionHead(nn.Module):
     def __init__(self, config : ModelArgs):
         super().__init__()

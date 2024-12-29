@@ -27,7 +27,8 @@ PIPELINES = [
     "embeddings",
     "masked_lm", 
     "text_classification", 
-    "token_classification"
+    "token_classification",
+    "sentence_transformers",
 ]
 
 MODEL_REMAPPING = {
@@ -110,6 +111,9 @@ def _get_classes(config: dict, pipeline: Optional[str] = 'masked_lm'):
     
     if pipeline == "embeddings":
         return arch.Model, arch.ModelArgs
+    
+    if pipeline == "sentence_transformers":
+        return arch.ModelForSentenceTransformers, arch.ModelArgs
 
     ### should not reach here
     return arch.Model, arch.ModelArgs
