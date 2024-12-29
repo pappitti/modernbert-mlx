@@ -23,8 +23,13 @@ from tokenizer_utils import TokenizerWrapper, load_tokenizer
 ### from .tuner.utils import dequantize as dequantize_model ### not needed here
 ### from .tuner.utils import load_adapters ### not needed here
 
+PIPELINES = [
+    "embeddings",
+    "masked_lm", 
+    "text_classification", 
+    "token_classification"
+]
 
-# Constants ### TODO : remove this hack?
 MODEL_REMAPPING = {
     "mistral": "llama",  # mistral is compatible with llama
     "phi-msft": "phixtral",
@@ -82,6 +87,9 @@ def _get_classes(config: dict, pipeline: Optional[str] = 'masked_lm'):
     Returns:
         A tuple containing the Model class and the ModelArgs class.
     """
+    if pipeline not in PIPELINES:
+        raise ValueError(f"Pipeline {pipeline} not supported. Supported pipelines: {PIPELINES}")
+
     model_type = config["model_type"]
     model_type = MODEL_REMAPPING.get(model_type, model_type)
     try:
@@ -93,7 +101,17 @@ def _get_classes(config: dict, pipeline: Optional[str] = 'masked_lm'):
 
     if pipeline == "masked_lm":
         return arch.ModelForMaskedLM, arch.ModelArgs
+    
+    if pipeline == "text_classification":
+        return arch.ModelForSequenceClassification, arch.ModelArgs
+    
+    if pipeline == "token_classification":
+        return arch.ModelForTokenClassification, arch.ModelArgs
+    
+    if pipeline == "embeddings":
+        return arch.Model, arch.ModelArgs
 
+    ### should not reach here
     return arch.Model, arch.ModelArgs
 
 

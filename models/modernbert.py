@@ -13,7 +13,6 @@ from .base import BaseModelArgs
 ### TODO: 
 ## general model
 # checkpoint
-# 
 
 
 def rotate_half(x):
@@ -77,7 +76,7 @@ class ModelArgs(BaseModelArgs):
     sep_token_id=50282,
     decoder_bias=True,
     classifier_pooling: Literal["cls", "mean"] = "cls",
-    classifier_dropout=0.0, # Don't think this is relevant in MLX
+    classifier_dropout=0.0, 
     classifier_bias=False,
     # classifier_activation="gelu"
     # deterministic_flash_attn=False ## for torch only, to remove???
@@ -346,9 +345,9 @@ class ModernBertModel(nn.Module):
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
-            # if self.gradient_checkpointing and training:
+            # if self.gradient_checkpointing and self.training:
             #     ### TODO ?
-            #     layer_outputs = self.checkpoint(
+            #     layer_outputs = mx.checkpoint(
             #         encoder_layer.__call__,
             #         hidden_states,
             #         attention_mask,
@@ -441,7 +440,7 @@ class Model(nn.Module):
             input_ids,
             attention_mask=attention_mask,
         )
-        sequence_output = encoder_outputs["last_hidden_state"] if isinstance(encoder_outputs, dict) else encoder_outputs[0]
+        sequence_output = encoder_outputs["last_hidden_state"] if isinstance(encoder_outputs, dict) else encoder_outputs[0] 
         
         # Do pooling here (unlike BERT)
         if self.config.classifier_pooling == "cls":
@@ -450,12 +449,12 @@ class Model(nn.Module):
             attention_mask = mx.expand_dims(attention_mask, -1)
             pooled = mx.sum(sequence_output * attention_mask, axis=1) / mx.sum(attention_mask, axis=1)
             
-        # normalization?
-        pooled_normalized = pooled / mx.sqrt(mx.sum(pooled * pooled, axis=-1, keepdims=True) + 1e-12)
+        # normalization
+        pooled = pooled / mx.sqrt(mx.sum(pooled * pooled, axis=-1, keepdims=True) + 1e-12)
 
         print("sequence_output", sequence_output.shape)
 
-        return sequence_output, pooled_normalized 
+        return sequence_output, pooled 
     
     def sanitize(self, weights):
         sanitized_weights = {}
@@ -589,6 +588,160 @@ class ModelForMaskedLM(nn.Module):
                 ### going around the weight tying issue. TODO : improve this
                 sanitized_weights["decoder.weight"] = v
                 sanitized_weights[k] = v
+            else:
+                sanitized_weights[k] = v
+        return sanitized_weights
+    
+class ModelForSequenceClassification(nn.Module):
+    def __init__(self, config: ModelArgs):
+        super().__init__()
+        self.config = config
+        self.num_labels = config.num_labels
+        
+        self.model = ModernBertModel(config)
+        self.head = ModernBertPredictionHead(config)
+        self.drop = nn.Dropout(p=config.classifier_dropout)
+        self.classifier = nn.Linear(config.hidden_size, config.num_labels, bias=config.classifier_bias)
+
+    def __call__(
+        self,
+        input_ids,
+        attention_mask: Optional[mx.array] = None,
+        position_ids: Optional[mx.array] = None,
+        labels: Optional[mx.array] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = True,
+    ) -> Dict:
+        if attention_mask is None:
+            batch_size, seq_len = input_ids.shape
+            attention_mask = mx.ones((batch_size, seq_len))
+
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        last_hidden_state = outputs["last_hidden_state"] if return_dict else outputs[0]
+
+        # Pooling strategy
+        if self.config.classifier_pooling == "cls":
+            pooled = last_hidden_state[:, 0]
+        elif self.config.classifier_pooling == "mean":
+            attention_mask = mx.expand_dims(attention_mask, -1)
+            pooled = mx.sum(last_hidden_state * attention_mask, axis=1) / mx.sum(attention_mask, axis=1)
+
+        # Apply head, dropout and classifier
+        pooled = self.head(pooled)
+        pooled = self.drop(pooled)
+        logits = self.classifier(pooled)
+
+        loss = None
+        if labels is not None :
+            if self.num_labels == 1:
+                # Regression
+                loss = nn.losses.mse_loss(logits.squeeze(), labels.squeeze())
+            else:
+                if len(labels.shape) == 1 or labels.shape[-1] == 1:
+                    # Single-label classification
+                    loss = nn.losses.cross_entropy(
+                        logits.reshape(-1, self.num_labels),
+                        labels.reshape(-1)
+                    )
+                else:
+                    # Multi-label classification
+                    loss = nn.losses.binary_cross_entropy(logits, labels)
+
+        if not return_dict:
+            output = (logits,)
+            return ((loss,) + output) if loss is not None else output
+
+        return {
+            "loss": loss,
+            "logits": logits,
+            "hidden_states": outputs.get("hidden_states", None),
+        }
+    
+    def sanitize(self, weights):
+        sanitized_weights = {}
+        for k, v in weights.items():
+            if "position_ids" in k:
+                # Remove unused position_ids
+                continue
+            # if k in ["head.dense.bias"]:  # Add any other weights that should be skipped
+            #     continue
+            else:
+                sanitized_weights[k] = v
+        return sanitized_weights
+    
+
+class ModelForTokenClassification(nn.Module):
+    def __init__(self, config: ModelArgs):
+        super().__init__()
+        self.config = config
+        self.num_labels = config.num_labels
+        
+        self.model = ModernBertModel(config)
+        self.head = ModernBertPredictionHead(config)
+        self.drop = nn.Dropout(p=config.classifier_dropout)
+        self.classifier = nn.Linear(config.hidden_size, config.num_labels, bias=config.classifier_bias)
+
+    def __call__(
+        self,
+        input_ids,
+        attention_mask: Optional[mx.array] = None,
+        position_ids: Optional[mx.array] = None,
+        labels: Optional[mx.array] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = True,
+    ) -> Dict:
+        if attention_mask is None:
+            batch_size, seq_len = input_ids.shape
+            attention_mask = mx.ones((batch_size, seq_len))
+
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        sequence_output = outputs["last_hidden_state"] if return_dict else outputs[0]
+        
+        # Apply prediction head, dropout, and classification layer to each token
+        sequence_output = self.head(sequence_output)
+        sequence_output = self.drop(sequence_output)
+        logits = self.classifier(sequence_output)
+
+        loss = None
+        if labels is not None:
+            # Compute token classification loss
+            loss = nn.losses.cross_entropy(
+                logits.reshape(-1, self.num_labels),
+                labels.reshape(-1)
+            )
+
+        if not return_dict:
+            output = (logits,)
+            return ((loss,) + output) if loss is not None else output
+
+        return {
+            "loss": loss,
+            "logits": logits,
+            "hidden_states": outputs.get("hidden_states", None),
+        }
+    
+    def sanitize(self, weights):
+        sanitized_weights = {}
+        for k, v in weights.items():
+            if "position_ids" in k:
+                # Remove unused position_ids
+                continue
+            # if k in ["head.dense.bias"]:  # Add any other weights that should be skipped
+            #     continue
             else:
                 sanitized_weights[k] = v
         return sanitized_weights
