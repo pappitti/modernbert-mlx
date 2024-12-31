@@ -19,7 +19,7 @@ Examples of inference pipelines are presented in tests_maskedlm.py and tests_sen
 
 ## Work in Progress
 - Current implementation has yielded encouraging results for MaskedLM tasks using in [this HF checkpoint](https://huggingface.co/answerdotai/ModernBERT-base) and ModelForMaskedLM in models/modernbert. Only at inference
-- models/modernbert includes a Model class meant to return sequence embeddings. Given most checkpoint trained for sentence similarity use a config for Sentence Transformers, an additional class, ModelForSentenceTransformers, was created specifically to sanitize the weights appropriately. Encouraging results for [this checkpoint](https://huggingface.co/makiart/ft-modern-bert-emb-all-nli) and [this checkpoint](https://huggingface.co/tasksource/ModernBERT-base-embed), only at inference
+- models/modernbert includes a Model class meant to return sequence embeddings. Given most checkpoint trained for sentence similarity use a config for Sentence Transformers, an additional class, ModelForSentenceTransformers, was created specifically to sanitize the weights appropriately. Encouraging results for [this checkpoint](https://huggingface.co/makiart/ft-modern-bert-emb-all-nli), [this checkpoint](https://huggingface.co/tasksource/ModernBERT-base-embed), and replicated the [nomic modernbert-embed-base](https://huggingface.co/nomic-ai/modernbert-embed-base) example. Only at inference
 - ModelForSequenceClassification and ModelForTokenClassification not tested. Classes inspired by [transformers](https://github.com/huggingface/transformers/blob/main/src/transformers/models/modernbert/modular_modernbert.py) 
 
 ## Next Steps

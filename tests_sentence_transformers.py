@@ -3,7 +3,7 @@ from utils import load
 
 def main():
     # Load the model and tokenizer
-    model_name = "tasksource/ModernBERT-base-embed" #makiart/ft-modern-bert-emb-all-nli, tasksource/ModernBERT-base-embed 
+    model_name = "nomic-ai/modernbert-embed-base" #makiart/ft-modern-bert-emb-all-nli, tasksource/ModernBERT-base-embed, nomic-ai/modernbert-embed-base 
     model, tokenizer = load(model_name, pipeline="sentence_transformers") 
     max_position_embeddings = getattr(model.config,"max_position_embeddings",512)
     print(max_position_embeddings)
@@ -23,11 +23,17 @@ def main():
         return embeddings
 
     # Sample texts
+    # texts = [
+    #     "I like grapes",
+    #     "I like fruits",
+    #     "The slow green turtle crawls under the busy ant.",
+    #     "Sand!",
+    # ]
+
     texts = [
-        "I like grapes",
-        "I like fruits",
-        "The slow green turtle crawls under the busy ant.",
-        "Sand!",
+        "search_query: What is TSNE?",
+        "search_query: Who is Laurens van der Maaten?",
+        "search_document: TSNE is a dimensionality reduction algorithm created by Laurens van Der Maaten",
     ]
 
     # Generate embeddings
