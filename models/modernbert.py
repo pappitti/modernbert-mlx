@@ -323,7 +323,7 @@ class ModernBertModel(nn.Module):
         all_hidden_states = () if output_hidden_states else None
         # all_attentions = () if output_attentions else None # should not be used with sdpa
 
-        # self.warn_if_padding_and_no_attention_mask(input_ids, attention_mask) ### work out the padding before removing this line
+        # self.warn_if_padding_and_no_attention_mask(input_ids, attention_mask) ###  TODO : review padding strategy before removing this line
 
         batch_size, seq_len = input_ids.shape[:2]
 
@@ -429,6 +429,10 @@ class Model(nn.Module):
         self, 
         input_ids, 
         attention_mask: Optional[mx.array] = None,
+        labels: Optional[mx.array] = None,  # Expected to be a similarity matrix
+        position_ids: Optional[mx.array] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = True,
     ):
         
         if attention_mask is None:
@@ -439,22 +443,37 @@ class Model(nn.Module):
         encoder_outputs = self.model(
             input_ids,
             attention_mask=attention_mask,
+            position_ids=position_ids,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
         )
-        sequence_output = encoder_outputs["last_hidden_state"] if isinstance(encoder_outputs, dict) else encoder_outputs[0] 
+        hidden_states = encoder_outputs["last_hidden_state"] if isinstance(encoder_outputs, dict) else encoder_outputs[0] 
         
         # Do pooling here (unlike BERT)
         if self.config.classifier_pooling == "cls":
-            pooled = sequence_output[:, 0]
+            pooled = hidden_states[:, 0]
         elif self.config.classifier_pooling == "mean":                
             attention_mask = mx.expand_dims(attention_mask, -1)
-            pooled = mx.sum(sequence_output * attention_mask, axis=1) / mx.sum(attention_mask, axis=1)
+            pooled = mx.sum(hidden_states * attention_mask, axis=1) / mx.sum(attention_mask, axis=1)
             
         # normalization
         pooled = pooled / mx.sqrt(mx.sum(pooled * pooled, axis=-1, keepdims=True) + 1e-12)
 
-        print("sequence_output", sequence_output.shape)
+        loss = None
+        if labels is not None:
+            # Compute cosine similarity between all pairs
+            similarity = mx.matmul(pooled, pooled.T)
+            # Compute MSE loss between computed similarities and target similarities
+            loss = nn.losses.mse_loss(similarity, labels)
 
-        return sequence_output, pooled 
+        if not return_dict:
+            return (loss,pooled, hidden_states) 
+
+        return {
+            "loss": loss,
+            "embeddings": pooled,
+            "hidden_states": hidden_states,
+        }
     
     def sanitize(self, weights):
         sanitized_weights = {}

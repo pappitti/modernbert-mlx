@@ -18,7 +18,7 @@ def main():
             max_length= max_position_embeddings
         )
         outputs = model(input_ids)
-        embeddings=outputs[1] #outputs[0] is the last_hidden_state, outputs[1] is the pooled_output
+        embeddings=outputs["embeddings"] #will be returned as a dictionary by default (use embeddings=outputs[0] otherwise)
 
         return embeddings
 
