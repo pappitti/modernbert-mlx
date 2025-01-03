@@ -1,17 +1,18 @@
-# Copyright © 2024 Apple Inc.
-
-import glob
-import shutil
 import time
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Union
+from typing import Optional, Dict, Any, Tuple, List
+from textwrap import dedent
 
 import mlx.core as mx
 import mlx.nn as nn
-import numpy as np
+import mlx.optimizers
+
 from mlx.nn.utils import average_gradients
 from mlx.utils import tree_flatten
+
+from .datasets import Dataset
 
 
 def grad_checkpoint(layer):
@@ -27,343 +28,388 @@ def grad_checkpoint(layer):
 
         return mx.checkpoint(inner_fn)(model.trainable_parameters(), *args, **kwargs)
 
-    type(layer).__call__ = checkpointed_fn
+    type(layer).__call__ = checkpointed_fn ### what is this
 
+def create_mlm_masks(
+    input_ids: mx.array,
+    tokenizer,
+    mlm_probability: float = 0.15
+) -> Tuple[mx.array, mx.array]:
+    """
+    Creates masked input and corresponding labels for MLM training.
+    
+    Args:
+        input_ids: Original input token IDs
+        tokenizer: Tokenizer with special token information
+        mlm_probability: Probability of masking a token (default 15%)
+    
+    Returns:
+        Tuple of (masked_inputs, mlm_labels) where mlm_labels contains
+        the original tokens at masked positions and -100 elsewhere
+    """
+    # Create probability mask
+    probability_matrix = mx.random.uniform(input_ids.shape) < mlm_probability
+    
+    # Don't mask special tokens like [CLS], [SEP], etc.
+    special_tokens_mask = mx.array([
+        [1 if token_id in [tokenizer.cls_token_id, tokenizer.sep_token_id, tokenizer.pad_token_id]
+         else 0 for token_id in input_sequence]
+        for input_sequence in input_ids
+    ])
+    probability_matrix = mx.where(special_tokens_mask, 0, probability_matrix)
+    
+    # Create labels: -100 for unmasked tokens (ignored in loss computation)
+    labels = mx.where(probability_matrix, input_ids, -100)
+    
+    # Decide replacement strategy for each masked token:
+    # 80% [MASK], 10% random, 10% unchanged
+    random_matrix = mx.random.uniform(input_ids.shape)
+    
+    # Indices for [MASK] tokens (80% of masked tokens)
+    mask_indices = (probability_matrix) & (random_matrix < 0.8)
+    # Indices for random tokens (10% of masked tokens)
+    random_indices = (probability_matrix) & (random_matrix >= 0.8) & (random_matrix < 0.9)
+    
+    # Create masked input
+    masked_inputs = input_ids.copy()
+    # Replace with [MASK] token
+    masked_inputs = mx.where(mask_indices, tokenizer.mask_token_id, masked_inputs)
+    # Replace with random tokens
+    random_tokens = mx.random.randint(
+        0, tokenizer.vocab_size, 
+        shape=input_ids.shape
+    )
+    masked_inputs = mx.where(random_indices, random_tokens, masked_inputs)
+    
+    return masked_inputs, labels
 
 @dataclass
 class TrainingArgs:
-    batch_size: int = field(default=4, metadata={"help": "Minibatch size."})
-    iters: int = field(default=100, metadata={"help": "Iterations to train for."})
-    val_batches: int = field(
-        default=25,
-        metadata={
-            "help": "Number of validation batches, -1 uses the entire validation set."
-        },
-    )
-    steps_per_report: int = field(
-        default=10,
-        metadata={"help": "Number of training steps between loss reporting."},
-    )
-    steps_per_eval: int = field(
-        default=200, metadata={"help": "Number of training steps between validations."}
-    )
-    steps_per_save: int = field(
-        default=100, metadata={"help": "Save the model every number steps"}
-    )
-    max_seq_length: int = field(
-        default=2048, metadata={"help": "Maximum sequence length."}
-    )
-    adapter_file: str = field(
-        default="adapters.safetensors",
-        metadata={"help": "Save/load path for the trained adapter weights."},
-    )
-    grad_checkpoint: bool = field(
-        default=False,
-        metadata={"help": "Use gradient checkpointing to reduce memory use."},
-    )
+    batch_size: int = field(default=32, metadata={"help": "Training batch size"})
+    eval_batch_size: int = field(default=16, metadata={"help": "Evaluation batch size"})
+    max_length: int = field(default=512, metadata={"help": "Maximum sequence length"})
+    num_train_epochs: int = field(default=3, metadata={"help": "Number of training epochs"})
+    learning_rate: float = field(default=5e-5, metadata={"help": "Initial learning rate"})
+    weight_decay: float = field(default=0.01, metadata={"help": "Weight decay coefficient"})
+    warmup_ratio: float = field(default=0.1, metadata={"help": "Warmup ratio for learning rate scheduler"}) ### not used here but kept for later (see scheduler in utils)
+    gradient_accumulation_steps: int = field(default=1, metadata={"help": "Number of steps to accumulate gradients"})
+    eval_steps: int = field(default=500, metadata={"help": "Steps between evaluations"})
+    save_steps: int = field(default=1000, metadata={"help": "Steps between model saves"})
+    logging_steps: int = field(default=100, metadata={"help": "Steps between logging"})
+    output_dir: str = field(default="outputs", metadata={"help": "Directory to save outputs"})
+    save_total_limit: Optional[int] = field(default=None, metadata={"help": "If set, limits total number of saved checkpoints"})
+    grad_checkpoint: bool = field(default=True, metadata={"help": "Use gradient checkpointing"}) ### mat not be necessary but helps anticipating hardware constraints
+    push_to_hub: bool = field(default=False, metadata={"help": "Push model checkpoints to the HF"}) ### not used here but kept for later (see push_to_hub in utils)
 
-### TODO : change default loss depending on use case
-def default_loss(model, inputs, targets, lengths):
-    logits = model(inputs)
-    logits = logits.astype(mx.float32)
-
-    length_mask = mx.arange(inputs.shape[1])[None, :] < lengths[:, None]
-
-    ce = nn.losses.cross_entropy(logits, targets) * length_mask
-    ntoks = length_mask.sum()
-    ce = ce.sum() / ntoks
-
-    return ce, ntoks
-
-### placeholder for masked LM (TODO)
-def mlm_loss(model, inputs, targets, lengths):
-    # The model's __call__ already handles masking and loss computation
-    outputs = model(
-        input_ids=inputs,
-        labels=targets
-    )
-    return outputs["loss"], mx.array(sum(lengths))
-
-### placeholder for sequence classification (TODO)
-def sequence_classification_loss(model, inputs, targets, lengths):
-    outputs = model(
-        input_ids=inputs,
-        labels=targets
-    )
-    return outputs["loss"], mx.array(inputs.shape[0])
-
-### placeholder for token classification (TODO)
-def token_classification_loss(model, inputs, targets, lengths):
-    outputs = model(
-        input_ids=inputs,
-        labels=targets
-    )
-    return outputs["loss"], mx.array(sum(lengths))
-
-### placeholder for sentence similarity (TODO)
-def sentence_transformer_loss(model, inputs, targets, lengths):
-    _, pooled = model(inputs)  # Use pooled output
-    
-    # Normalize embeddings (though your model already does this)
-    similarity = mx.matmul(pooled, pooled.T)
-    
-    # Assuming targets is a similarity matrix
-    loss = nn.losses.mse_loss(similarity, targets)
-    
-    return loss, mx.array(inputs.shape[0])
-
-def iterate_batches(dataset, tokenizer, batch_size, max_seq_length, train=False):
-    # Sort by length:
-    idx = sorted(range(len(dataset)), key=lambda idx: len(dataset[idx]))
-    if len(dataset) < batch_size:
-        raise ValueError(
-            f"Dataset must have at least batch_size={batch_size}"
-            f" examples but only has {len(dataset)}."
+class Trainer:
+    """
+    A trainer for ModernBERT that adapts to the model's training objective.
+    The training logic is determined by the model's class implementation.
+    """
+    def __init__(
+        self,
+        model: nn.Module,
+        tokenizer,
+        training_args: TrainingArgs,
+        train_dataset: Dataset,
+        eval_dataset: Optional[Dataset] = None,
+        optimizer = None
+    ):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.args = training_args
+        self.train_dataset = train_dataset
+        self.eval_dataset = eval_dataset
+        
+        # Initialize optimizer
+        self.optimizer = optimizer or mlx.optimizers.AdamW(
+            learning_rate=training_args.learning_rate,
+            weight_decay=training_args.weight_decay
         )
+        
+        # Setup training state and output directory
+        self.global_step = 0
+        self.epoch = 0
+        self.output_dir = Path(training_args.output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Enable gradient checkpointing if requested
+        if training_args.grad_checkpoint:
+            for layer in model.layers:
+                grad_checkpoint(layer)
+        
+        # Log model type and config
+        self.push_to_hub = training_args.push_to_hub
+        print(f"Training {model.__class__.__name__}")
+        self._save_config()
 
-    # If running in distributed mode (N machines) then each one should skip N-1
-    # samples
-    step = mx.distributed.init().size()
-    if batch_size % step != 0:
-        raise ValueError("The batch size must be divisible by the number of workers")
-
-    # Make the batches:
-    batch_idx = [
-        idx[i : i + batch_size : step]
-        for i in range(0, len(idx) - batch_size + 1, batch_size)
-    ]
-
-    while True:
-        indices = np.random.permutation(len(batch_idx))
-        for i in indices:
-            # Encode batch
-            batch = [tokenizer.encode(dataset[j]) for j in batch_idx[i]]
-            for b in batch:
-                if b[-1] != tokenizer.eos_token_id:
-                    b.append(tokenizer.eos_token_id)
-
-            lengths = [len(x) for x in batch]
-
-            if max(lengths) > max_seq_length:
-                print(
-                    f"[WARNING] Some sequences are longer than {max_seq_length} tokens. "
-                    f"The longest sentence {max(lengths)} will be truncated to {max_seq_length}. "
-                    "Consider pre-splitting your data to save memory."
-                )
-
-            # Pad to the nearest multiple of 8 or the maximum length
-            pad_to = 8
-            max_length_in_batch = pad_to * ((max(lengths) + pad_to - 1) // pad_to)
-            max_length_in_batch = min(max_length_in_batch, max_seq_length)
-
-            batch_arr = np.zeros((batch_size // step, max_length_in_batch), np.int32)
-
-            for j in range(batch_size // step):
-                truncated_length = min(lengths[j], max_seq_length)
-                batch_arr[j, :truncated_length] = batch[j][:truncated_length]
-                lengths[j] = (
-                    truncated_length  # Update lengths to match truncated lengths
-                )
-            batch = mx.array(batch_arr)
-
-            yield batch[:, :-1], batch[:, 1:], mx.array(lengths)
-
-        if not train:
-            break
-
-
-def evaluate(
-    model,
-    dataset,
-    tokenizer,
-    batch_size,
-    num_batches,
-    max_seq_length=2048,
-    loss: callable = default_loss,
-    iterate_batches: callable = iterate_batches,
-):
-    all_losses = 0
-    ntokens = 0
-
-    index_iterator = iter(range(num_batches)) if num_batches != -1 else iter(int, 1)
-
-    for _, batch in zip(
-        index_iterator,
-        iterate_batches(
-            dataset=dataset,
-            tokenizer=tokenizer,
-            batch_size=batch_size,
-            max_seq_length=max_seq_length,
-        ),
-    ):
-        losses, toks = loss(model, *batch)
-        all_losses += losses * toks
-        ntokens += toks
-        mx.eval(all_losses, ntokens)
-
-    all_losses = mx.distributed.all_sum(all_losses)
-    ntokens = mx.distributed.all_sum(ntokens)
-
-    return (all_losses / ntokens).item()
-
-
-class TrainingCallback:
-
-    def on_train_loss_report(self, train_info: dict):
-        """Called to report training loss at specified intervals."""
-        pass
-
-    def on_val_loss_report(self, val_info: dict):
-        """Called to report validation loss at specified intervals or the beginning."""
-        pass
-
-
-def train(
-    model,
-    tokenizer,
-    optimizer,
-    train_dataset,
-    val_dataset,
-    args: TrainingArgs = TrainingArgs(),
-    loss: callable = default_loss,
-    iterate_batches: callable = iterate_batches,
-    training_callback: TrainingCallback = None,
-):
-    print(f"Starting training..., iters: {args.iters}")
-    world = mx.distributed.init()
-    world_size = world.size()
-    rank = world.rank()
-    if world_size > 1:
-        print(f"Node {rank} of {world_size}")
-
-    if args.grad_checkpoint:
-        grad_checkpoint(model.layers[0])
-
-    state = [model.state, optimizer.state]
-
-    def step(batch):
-        # Forward and backward pass
-        (lvalue, toks), grad = loss_value_and_grad(model, *batch)
-
-        # All reduce the gradients if running in distributed mode
-        grad = average_gradients(grad)
-
-        # Model update
-        optimizer.update(model, grad)
-
-        return lvalue, toks
-
-    loss_value_and_grad = nn.value_and_grad(model, loss)
-
-    losses = 0
-    n_tokens = 0
-    steps = 0
-    trained_tokens = 0
-    # Main training loop
-    start = time.perf_counter()
-    for it, batch in zip(
-        range(1, args.iters + 1),
-        iterate_batches(
-            dataset=train_dataset,
-            tokenizer=tokenizer,
-            batch_size=args.batch_size,
-            max_seq_length=args.max_seq_length,
-            train=True,
-        ),
-    ):
-        # Report validation loss if needed, the first validation loss
-        # is always measured before any training.
-        if it == 1 or it % args.steps_per_eval == 0 or it == args.iters:
-            stop = time.perf_counter()
-            val_loss = evaluate(
-                model=model,
-                dataset=val_dataset,
-                loss=loss,
-                tokenizer=tokenizer,
-                batch_size=args.batch_size,
-                num_batches=args.val_batches,
-                max_seq_length=args.max_seq_length,
-                iterate_batches=iterate_batches,
+    def prepare_batch(self, batch: List[Dict[str, Any]]) -> Dict[str, mx.array]:
+        """
+        Prepare inputs based on model type. The model's forward pass will handle
+        the specific training objective.
+        """
+        # Extract texts and labels from the batch of dictionaries
+        texts = [example["text"] for example in batch]
+            
+        # Use tokenizer with padding and truncation
+        encoded = self.tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            max_length=self.args.max_length,
+            return_tensors="mlx"
+        )
+        
+        model_inputs = {
+            "input_ids": encoded["input_ids"],
+            "attention_mask": encoded["attention_mask"],
+            "position_ids": encoded["input_ids"].shape[1][None, :]
+        }
+        
+        # Add task-specific labels
+        ### TODO : do better than this (once all tasks are implemented)
+        if self.args.task_type == "text_classification":
+            labels = [example["label"] for example in batch]  # These are already IDs
+            if self.model.is_regression:
+                model_inputs["labels"] = mx.array(labels, dtype=mx.float32)
+            else:
+                model_inputs["labels"] = mx.array(labels)
+        elif self.args.task_type == "token_classification":
+            labels = [example["label"] for example in batch]
+            model_inputs["labels"] = mx.array(labels)
+        elif self.args.task_type == "sentence_transformers":
+            raise NotImplementedError('training loop for feature extraction not finalized')
+            ### Currently similarity score is not an outpout of Model, may need to be reworked to allow feature extraction training
+            ### TODO
+            # model_inputs["labels"] = mx.array(batch["similarity_score"])
+        elif self.args.task_type == "masked_lm":
+            # For MLM, we need to mask some tokens
+            inputs, labels = create_mlm_masks(
+                model_inputs["input_ids"],
+                self.tokenizer
             )
-            val_time = time.perf_counter() - stop
-            if rank == 0:
-                print(
-                    f"Iter {it}: "
-                    f"Val loss {val_loss:.3f}, "
-                    f"Val took {val_time:.3f}s",
-                    flush=True,
-                )
+            model_inputs["input_ids"] = inputs
+            model_inputs["labels"] = labels
+            
+        return model_inputs
 
-            if training_callback is not None:
-                val_info = {
-                    "iteration": it,
-                    "val_loss": val_loss,
-                    "val_time": val_time,
-                }
-                training_callback.on_val_loss_report(val_info)
+    def train(self):
+        """Main training loop."""
+        print("Starting training...")
+        
+        for epoch in range(self.args.num_train_epochs):
+            self.epoch = epoch
+            print(f"\nEpoch {epoch + 1}/{self.args.num_train_epochs}")
+            self._train_epoch()
+            
+            if self.eval_dataset is not None:
+                metrics = self.evaluate()
+                self._save_checkpoint(metrics)
+    
+    def _train_epoch(self):
+        """Training logic for one epoch."""
+        self.model.train()
+        accumulated_loss = 0
+        num_steps = 0
+        start_time = time.time()
+        
+        # Create batches from dataset
+        train_dataloader = self._create_dataloader(self.train_dataset, shuffle=True)
+        
+        for step, batch in enumerate(train_dataloader):
+            # Prepare batch - model's forward pass handles the specific objective
+            inputs = self.prepare_batch(batch)
+            
+            # Forward pass - model returns dict with 'loss' key
+            loss = self.model(**inputs)["loss"]
+            loss = loss / self.args.gradient_accumulation_steps
+            
+            # Backward pass
+            gradients = mx.grad(self.model)(inputs)
+            
+            # Update on gradient accumulation steps
+            if (step + 1) % self.args.gradient_accumulation_steps == 0:
+                gradients = average_gradients(gradients)
+                self.optimizer.update(self.model, gradients)
+                self.global_step += 1
+            
+            # Logging
+            accumulated_loss += loss.item()
+            num_steps += 1
+            
+            if self.global_step % self.args.logging_steps == 0:
+                avg_loss = accumulated_loss / num_steps
+                elapsed = time.time() - start_time
+                print(f"Step {self.global_step}: "
+                      f"loss = {avg_loss:.4f}, "
+                      f"steps/sec = {num_steps/elapsed:.2f}")
+                accumulated_loss = 0
+                num_steps = 0
+                start_time = time.time()
+    
+    def evaluate(self):
+        """Evaluation loop."""
+        self.model.eval()
+        all_losses = []
+        
+        eval_dataloader = self._create_dataloader(self.eval_dataset, shuffle=False)
+        
+        for batch in eval_dataloader:
+            inputs = self.prepare_batch(batch)
+            loss = self.model(**inputs)["loss"]
+            all_losses.append(loss.item())
+        
+        avg_loss = sum(all_losses) / len(all_losses)
+        metrics = {"eval_loss": avg_loss}
+        
+        print(f"\nEvaluation metrics: {metrics}")
+        return metrics
+    
+    def test(self, test_dataset=None):
+        """
+        Evaluate the model on the test set after training is complete.
+        
+        Args:
+            test_dataset: Optional test dataset. If None, uses self.eval_dataset
+        """
+        print("\nPerforming final evaluation on test set...")
+        
+        # Save the model's training state
+        training = self.model.training
+        self.model.eval()
+        
+        # Use provided test dataset or fall back to eval dataset
+        dataset_to_test = test_dataset or self.eval_dataset
+        if dataset_to_test is None:
+            raise ValueError("No test dataset provided")
+        
+        # Perform evaluation
+        all_losses = []
+        test_dataloader = self._create_dataloader(dataset_to_test, shuffle=False)
+        
+        for batch in test_dataloader:
+            inputs = self.prepare_batch(batch)
+            loss = self.model(**inputs)["loss"]
+            all_losses.append(loss.item())
+        
+        # Compute metrics
+        test_loss = sum(all_losses) / len(all_losses)
+        metrics = {"test_loss": test_loss}
+        
+        # Save test results
+        results_path = self.output_dir / "test_results.json"
+        with open(results_path, "w") as f:
+            json.dump(metrics, f, indent=2)
+        
+        print(f"Test results: {metrics}")
+        
+        # Restore model's training state
+        self.model.train(training)
+        
+        return metrics
+    
+    def _create_dataloader(self, dataset: Dataset, shuffle: bool = False):
+        """Create a dataloader from a HuggingFace dataset."""
+        if shuffle:
+            dataset = dataset.shuffle()
+        
+        for i in range(0, len(dataset), self.args.batch_size):
+            yield dataset[i:i + self.args.batch_size]
+    
+    def _save_checkpoint(self, metrics: Dict[str, float]):
+        """Save a model checkpoint."""
+        save_path = self.output_dir / f"checkpoint-{self.global_step}"
+        save_path.mkdir(exist_ok=True)
+        
+        # Save model weights
+        ### sharding not necessary for small models
+        weights = dict(tree_flatten(self.model.trainable_parameters())) ### need more than just the model. potentially also the classifier
+        mx.save_safetensors(str(save_path / "model.safetensors"), weights, metadata={"format": "mlx"})
+        
+        # Save metrics
+        with open(save_path / "metrics.json", "w") as f:
+            json.dump(metrics, f, indent=2)
+        
+        # upload to HF
+        if self.push_to_hub:
+            ### TODO
+            raise NotImplementedError("Push to HF not implemented yet")
+            upload_to_hub(save_path)
+        
+        # Manage checkpoint rotation
+        if self.args.save_total_limit:
+            ### TODO
+            raise NotImplementedError("Checkpoint rotation not implemented yet")
+            self._rotate_checkpoints()
+    
+    def _save_config(self):
+        """Save training configuration."""
+        config = {
+            "model_type": self.model.__class__.__name__,
+            "training_args": vars(self.args)
+        }
+        with open(self.output_dir / "training_config.json", "w") as f:
+            json.dump(config, f, indent=2)
 
-            start = time.perf_counter()
+def upload_to_hub(
+        path: str, 
+        upload_repo: str, 
+        hf_path: str,
+        task_type: str,
+        ):
+    """
+    Uploads the model to Hugging Face hub.
 
-        lvalue, toks = step(batch)
-        losses += lvalue
-        n_tokens += toks
-        steps += 1
-        mx.eval(state, losses, n_tokens)
+    Args:
+        path (str): Local path to the model.
+        upload_repo (str): Name of the HF repo to upload to.
+        hf_path (str): Path to the original Hugging Face model.
+        task_type (str): Type of task the model was trained on.
+    """
+    import os
 
-        # Report training loss if needed
-        if it % args.steps_per_report == 0 or it == args.iters:
-            stop = time.perf_counter()
+    from huggingface_hub import HfApi, ModelCard, logging
 
-            train_loss = mx.distributed.all_sum(losses).item()
-            train_loss /= steps * mx.distributed.init().size()
-            n_tokens = mx.distributed.all_sum(n_tokens).item()
-            learning_rate = optimizer.learning_rate.item()
-            it_sec = args.steps_per_report / (stop - start)
-            tokens_sec = float(n_tokens) / (stop - start)
-            trained_tokens += n_tokens
-            peak_mem = mx.metal.get_peak_memory() / 1e9
-            if rank == 0:
-                print(
-                    f"Iter {it}: Train loss {train_loss:.3f}, "
-                    f"Learning Rate {learning_rate:.3e}, "
-                    f"It/sec {it_sec:.3f}, "
-                    f"Tokens/sec {tokens_sec:.3f}, "
-                    f"Trained Tokens {trained_tokens}, "
-                    f"Peak mem {peak_mem:.3f} GB",
-                    flush=True,
-                )
+    from . import __version__
 
-            if training_callback is not None:
-                train_info = {
-                    "iteration": it,
-                    "train_loss": train_loss,
-                    "learning_rate": learning_rate,
-                    "iterations_per_second": it_sec,
-                    "tokens_per_second": tokens_sec,
-                    "trained_tokens": trained_tokens,
-                    "peak_memory": peak_mem,
-                }
-                training_callback.on_train_loss_report(train_info)
+    model_path = Path(path)
 
-            losses = 0
-            n_tokens = 0
-            steps = 0
-            start = time.perf_counter()
+    card = ModelCard.load(hf_path) if ModelCard.exist_in_hub(hf_path) else ModelCard()
+    card.data.tags = ["mlx" , "modernbert"] if card.data.tags is None else card.data.tags + ["mlx"] + ["modernbert"]
+    card.data.base_model = hf_path
+    card.data.task_type = task_type
+    card.text = dedent(
+        f"""
+        # {upload_repo}
 
-        # Save adapter weights
-        if it % args.steps_per_save == 0:
-            adapter_weights = dict(tree_flatten(model.trainable_parameters()))
-            mx.save_safetensors(str(args.adapter_file), adapter_weights)
-            checkpoint = (
-                Path(args.adapter_file).parent / f"{it:07d}_adapters.safetensors"
-            )
-            mx.save_safetensors(str(checkpoint), adapter_weights)
-            print(
-                f"Iter {it}: Saved adapter weights to "
-                f"{args.adapter_file} and {checkpoint}."
-            )
+        The Model [{upload_repo}](https://huggingface.co/{upload_repo}) was
+        converted to MLX format from [{hf_path}](https://huggingface.co/{hf_path})
+        TODO
 
-    # Save final weights
-    adapter_weights = dict(tree_flatten(model.trainable_parameters()))
-    mx.save_safetensors(str(args.adapter_file), adapter_weights)
-    print(f"Saved final weights to {args.adapter_file}.")
+        # ModernBERT Model: {upload_repo}
+
+        This model was trained using MLX ModernBERT for {task_type}.
+
+        ## Usage
+
+        ```python
+        TODO
+       
+        ```
+        """
+    )
+    # Save the model card
+    card.save(model_path / "README.md")
+
+    logging.set_verbosity_info()
+
+    api = HfApi()
+    api.create_repo(repo_id=upload_repo, exist_ok=True)
+    api.upload_folder(
+        folder_path=path,
+        repo_id=upload_repo,
+        repo_type="model",
+        multi_commits=True,
+        multi_commits_verbose=True,
+    )
+    print(f"Upload successful, go to https://huggingface.co/{upload_repo} for details.")

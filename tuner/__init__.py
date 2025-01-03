@@ -1,1 +1,1 @@
-from .trainer import TrainingArgs, evaluate, train
+from .trainer import TrainingArgs, Trainer

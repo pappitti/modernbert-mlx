@@ -3,7 +3,7 @@ from utils import load
 
 def main():
     # Load the model and tokenizer
-    model, tokenizer = load("answerdotai/ModernBERT-base", pipeline='masked_lm') #answerdotai/ModernBERT-base #sentence-transformers/all-MiniLM-L6-v2
+    model, tokenizer = load("answerdotai/ModernBERT-base", pipeline='masked-lm') #answerdotai/ModernBERT-base #sentence-transformers/all-MiniLM-L6-v2
 
     # Prepare the input text
     text = "The capital of France is [MASK]."

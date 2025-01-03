@@ -1,191 +1,125 @@
 import json
 from pathlib import Path
-from typing import Dict, List
-
-from transformers import PreTrainedTokenizer
-
+from typing import Dict, List, Optional, Tuple, Any
+from datasets import load_dataset
+import mlx.core as mx
 
 class Dataset:
-    """
-    Light-weight wrapper to hold a dataset.
-    """
+    """Dataset class for ModernBERT that handles various tasks and data sources"""
+    
+    def __init__(self, data: List[Dict[str, Any]], task_type: str):
+        self.data = data
+        self.task_type = task_type
+        self._validate_data()
+    
+    def _validate_data(self):
+        """Ensures data format matches the task requirements"""
+        for item in self.data:
+            if self.task_type == "masked_lm":
+                if "text" not in item:
+                    raise ValueError("MLM data must contain 'text' field")
+            elif self.task_type == "text_classification":
+                if "text" not in item or "label" not in item:
+                    raise ValueError("Classification data must contain 'text' and 'label' fields")
+            elif self.task_type == "sentence_transformers":
+                raise NotImplementedError("Sentence transformers training not yet implemented")
+                if "text" not in item or "similarity_score" not in item:
+                    raise ValueError("Sentence transformer data must contain 'text' and 'similarity_score' fields")
+            elif self.task_type == "token_classification":
+                if "text" not in item or "labels" not in item:
+                    raise ValueError("Token classification data must contain 'text' and 'labels' fields")
 
-    def __init__(self, data: List[Dict[str, str]], text_key: str = "text"):
-        self._text_key = text_key
-        self._data = data
-
-    def __getitem__(self, idx: int):
-        return self._data[idx][self._text_key]
-
+    def __getitem__(self, idx):
+        return self.data[idx]
+    
     def __len__(self):
-        if self._data is None:
-            return 0
-        return len(self._data)
+        return len(self.data)
 
-
-class ChatDataset(Dataset):
-    """
-    A dataset for chat data in the format of {"messages": [...]}
-    https://platform.openai.com/docs/guides/fine-tuning/example-format
-    """
-
-    def __init__(self, data: List[Dict[str, str]], tokenizer: PreTrainedTokenizer):
-        super().__init__(data)
-        self._tokenizer = tokenizer
-
-    def __getitem__(self, idx: int):
-        messages = self._data[idx]["messages"]
-        text = self._tokenizer.apply_chat_template(
-            messages,
-            tools=self._data[idx].get("tools", None),
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-        return text
-
-
-class CompletionsDataset(Dataset):
-    """
-    A dataset for prompt-completion data in the format of {"prompt": ..., "completion": ...}
-    or using user-provided keys for prompt and completion values
-    https://platform.openai.com/docs/guides/fine-tuning/example-format
-    """
-
-    def __init__(
-        self,
-        data: List[Dict[str, str]],
-        tokenizer: PreTrainedTokenizer,
-        prompt_key: str = "prompt",
-        completion_key: str = "completion",
-    ):
-        super().__init__(data)
-        self._tokenizer = tokenizer
-        self._prompt_key = prompt_key
-        self._completion_key = completion_key
-
-    def __getitem__(self, idx: int):
-        data = self._data[idx]
-        text = self._tokenizer.apply_chat_template(
-            [
-                {"role": "user", "content": data[self._prompt_key]},
-                {"role": "assistant", "content": data[self._completion_key]},
-            ],
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-        return text
-
-
-def create_dataset(data, tokenizer: PreTrainedTokenizer = None):
-    sample = data[0]
-
-    if "messages" in sample:
-        return ChatDataset(data, tokenizer)
-    elif "prompt" in sample and "completion" in sample:
-        return CompletionsDataset(data, tokenizer)
-    elif "text" in sample:
-        return Dataset(data)
-    else:
-        raise ValueError(
-            "Unsupported data format, check the supported formats here:\n"
-            "https://github.com/ml-explore/mlx-examples/blob/main/llms/mlx_lm/LORA.md#data."
-        )
-
-
-def load_local_dataset(data_path: Path, tokenizer: PreTrainedTokenizer):
-    def load_subset(path):
+def load_local_dataset(data_path: Path, task_type: str) -> Tuple[Optional[Dataset], Optional[Dataset], Optional[Dataset]]:
+    """Loads dataset from local jsonl files"""
+    def load_split(path):
         if not path.exists():
-            return []
-        with open(path, "r") as fid:
-            data = [json.loads(l) for l in fid]
-        return create_dataset(data, tokenizer)
+            return None
+        with open(path, "r") as f:
+            data = [json.loads(line) for line in f]
+        return Dataset(data, task_type)
+    
+    return (
+        load_split(data_path / "train.jsonl"),
+        load_split(data_path / "valid.jsonl"),
+        load_split(data_path / "test.jsonl")
+    )
 
-    names = ("train", "valid", "test")
-    train, valid, test = [load_subset(data_path / f"{n}.jsonl") for n in names]
-    return train, valid, test
+def process_hf_dataset(dataset, task_type: str, text_field: str = "text", label_field: str = "label") -> List[Dict[str, Any]]:
+    """Converts HuggingFace dataset to ModernBERT format"""
+    processed_data = []
+    
+    for item in dataset:
+        if task_type == "masked_lm":
+            processed_data.append({"text": item[text_field]})
+        elif task_type == "text_classification":
+            processed_data.append({
+                "text": item[text_field],
+                "label": item[label_field]
+            })
+        elif task_type == "token_classification":
+            processed_data.append({
+                "text": item[text_field],
+                "labels": item[label_field]
+            })
+        elif task_type == "sentence_transformers":
+            # Assuming the dataset has sentence pairs and scores
+            processed_data.append({
+                "text": [item["sentence1"], item["sentence2"]],
+                "similarity_score": item["score"]
+            })
+    
+    return processed_data
 
-
-def load_hf_dataset(data_id: str, tokenizer: PreTrainedTokenizer):
-    from datasets import exceptions, load_dataset
-
-    try:
-        dataset = load_dataset(data_id)
-
-        names = ("train", "valid", "test")
-
-        train, valid, test = [
-            create_dataset(dataset[n], tokenizer) if n in dataset.keys() else []
-            for n in names
-        ]
-
-    except exceptions.DatasetNotFoundError:
-        raise ValueError(f"Not found Hugging Face dataset: {data_id} .")
-
-    return train, valid, test
-
-
-def load_custom_hf_dataset(args, tokenizer: PreTrainedTokenizer):
-    import datasets
-
-    hf_args = args.hf_dataset
-    dataset_name = hf_args["name"]
-    print(f"Loading Hugging Face dataset {dataset_name}.")
-    text_feature = hf_args.get("text_feature")
-    prompt_feature = hf_args.get("prompt_feature")
-    completion_feature = hf_args.get("completion_feature")
-
-    def create_hf_dataset(split: str = None):
-        ds = datasets.load_dataset(
-            dataset_name,
-            split=split,
-            **hf_args.get("config", {}),
-        )
-        if prompt_feature and completion_feature:
-            return CompletionsDataset(ds, tokenizer, prompt_feature, completion_feature)
-        elif text_feature:
-            return Dataset(train_ds, text_key=text_feature)
-        else:
-            raise ValueError(
-                "Specify either a prompt and completion feature or a text "
-                "feature for the Hugging Face dataset."
+def load_hf_dataset(dataset_name: str, task_type: str, text_field: str = "text", label_field: str = "label") -> Tuple[Dataset, Dataset, Dataset]:
+    """Loads and processes a HuggingFace dataset"""
+    dataset = load_dataset(dataset_name)
+    
+    splits = {}
+    for split in ["train", "validation", "test"]:
+        if split in dataset:
+            data = process_hf_dataset(
+                dataset[split], 
+                task_type,
+                text_field,
+                label_field
             )
-
-    if args.train:
-        train_split = hf_args.get("train_split", "train[:80%]")
-        valid_split = hf_args.get("valid_split", "train[-10%:]")
-        train = create_hf_dataset(split=train_split)
-        valid = create_hf_dataset(split=valid_split)
-    else:
-        train, valid = [], []
-    if args.test:
-        test = create_hf_dataset(split=hf_args.get("test_split"))
-    else:
-        test = []
-
-    return train, valid, test
-
-
-def load_dataset(args, tokenizer: PreTrainedTokenizer):
-    if getattr(args, "hf_dataset", None) is not None:
-        train, valid, test = load_custom_hf_dataset(args, tokenizer)
-    else:
-        data_path = Path(args.data)
-        if data_path.exists():
-            train, valid, test = load_local_dataset(data_path, tokenizer)
+            splits[split] = Dataset(data, task_type)
         else:
-            print(f"Loading Hugging Face dataset {args.data}.")
-            train, valid, test = load_hf_dataset(args.data, tokenizer)
+            splits[split] = None
+            
+    return splits.get("train"), splits.get("validation"), splits.get("test")
 
-    if args.train and len(train) == 0:
-        raise ValueError(
-            "Training set not found or empty. Must provide training set for fine-tuning."
+def load_dataset(args) -> Tuple[Dataset, Dataset, Dataset]:
+    """Main dataset loading function that handles both local and HF datasets"""
+    if not hasattr(args, "task_type"):
+        raise ValueError("Must specify task_type in args")
+        
+    supported_tasks = ["masked_lm", "text_classification", "token_classification", "sentence_transformers"]
+    if args.task_type not in supported_tasks:
+        raise ValueError(f"Unsupported task type: {args.task_type}. Must be one of {supported_tasks}")
+    
+    # Handle local dataset
+    if Path(args.data).exists():
+        train, valid, test = load_local_dataset(Path(args.data), args.task_type)
+    # Handle HuggingFace dataset
+    else:
+        train, valid, test = load_hf_dataset(
+            args.data,
+            args.task_type,
+            getattr(args, "text_field", "text"),
+            getattr(args, "label_field", "label")
         )
-    if args.train and len(valid) == 0:
-        raise ValueError(
-            "Validation set not found or empty. Must provide validation set for fine-tuning."
-        )
-    if args.test and len(test) == 0:
-        raise ValueError(
-            "Test set not found or empty. Must provide test set for evaluation."
-        )
-    return train, valid, test
+    
+    # Validate required splits are present
+    if args.train and train is None:
+        raise ValueError("Training set required for training")
+    if args.train and valid is None:
+        raise ValueError("Validation set required for training")
+        
+    return train or [], valid or [], test or []

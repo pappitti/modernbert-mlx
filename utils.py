@@ -9,7 +9,6 @@ import logging
 import shutil
 import time
 from pathlib import Path
-from textwrap import dedent
 from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Type, Union
 
 import mlx.core as mx
@@ -20,15 +19,15 @@ from transformers import PreTrainedTokenizer
 
 # Local imports
 from tokenizer_utils import TokenizerWrapper, load_tokenizer
-from tuner.utils import dequantize as dequantize_model 
-from tuner.utils import nparams #, load_adapters ### remocing LORA given it does not really make sense for small models
+# from tuner.utils import dequantize as dequantize_model 
+from tuner.utils import nparams #, load_adapters ### removing LORA given it does not really make sense for small models
 
 PIPELINES = [
     "embeddings",
-    "masked_lm", 
-    "text_classification", 
-    "token_classification",
-    "sentence_transformers",
+    "masked-lm", 
+    "text-classification", 
+    "token-classification",
+    "sentence-transformers",
 ]
 
 MODEL_REMAPPING = {
@@ -44,7 +43,7 @@ class ModelNotFoundError(Exception):
         super().__init__(self.message)
 
 
-def _get_classes(config: dict, pipeline: Optional[str] = 'masked_lm'):
+def _get_classes(config: dict, pipeline: Optional[str] = 'masked-lm'):
     """
     Retrieve the model and model args classes based on the configuration.
 
@@ -66,19 +65,19 @@ def _get_classes(config: dict, pipeline: Optional[str] = 'masked_lm'):
         logging.error(msg)
         raise ValueError(msg)
 
-    if pipeline == "masked_lm":
+    if pipeline == "masked-lm":
         return arch.ModelForMaskedLM, arch.ModelArgs
     
-    if pipeline == "text_classification":
+    if pipeline == "text-classification":
         return arch.ModelForSequenceClassification, arch.ModelArgs
     
-    if pipeline == "token_classification":
+    if pipeline == "token-classification":
         return arch.ModelForTokenClassification, arch.ModelArgs
     
     if pipeline == "embeddings":
         return arch.Model, arch.ModelArgs
     
-    if pipeline == "sentence_transformers":
+    if pipeline == "sentence-transformers":
         return arch.ModelForSentenceTransformers, arch.ModelArgs
 
     ### should not reach here
@@ -270,152 +269,87 @@ def fetch_from_hub(
     return model, config, tokenizer
 
 
-def make_shards(weights: dict, max_file_size_gb: int = MAX_FILE_SIZE_GB) -> list:
-    """
-    Splits the weights into smaller shards.
+# def make_shards(weights: dict, max_file_size_gb: int = MAX_FILE_SIZE_GB) -> list:
+#     """
+#     Splits the weights into smaller shards.
 
-    Args:
-        weights (dict): Model weights.
-        max_file_size_gb (int): Maximum size of each shard in gigabytes.
+#     Args:
+#         weights (dict): Model weights.
+#         max_file_size_gb (int): Maximum size of each shard in gigabytes.
 
-    Returns:
-        list: List of weight shards.
-    """
-    max_file_size_bytes = max_file_size_gb << 30
-    shards = []
-    shard, shard_size = {}, 0
-    for k, v in weights.items():
-        if shard_size + v.nbytes > max_file_size_bytes:
-            shards.append(shard)
-            shard, shard_size = {}, 0
-        shard[k] = v
-        shard_size += v.nbytes
-    shards.append(shard)
-    return shards
-
-
-def upload_to_hub(path: str, upload_repo: str, hf_path: str):
-    """
-    Uploads the model to Hugging Face hub.
-
-    Args:
-        path (str): Local path to the model.
-        upload_repo (str): Name of the HF repo to upload to.
-        hf_path (str): Path to the original Hugging Face model.
-    """
-    import os
-
-    from huggingface_hub import HfApi, ModelCard, logging
-
-    from . import __version__
-
-    card = ModelCard.load(hf_path)
-    card.data.tags = ["mlx"] if card.data.tags is None else card.data.tags + ["mlx"]
-    card.data.base_model = hf_path
-    card.text = dedent(
-        f"""
-        # {upload_repo}
-
-        The Model [{upload_repo}](https://huggingface.co/{upload_repo}) was
-        converted to MLX format from [{hf_path}](https://huggingface.co/{hf_path})
-        using mlx-lm version **{__version__}**.
-
-        ## Use with mlx
-
-        ```bash
-        pip install mlx-lm
-        ```
-
-        ```python
-        from mlx_lm import load, generate
-
-        model, tokenizer = load("{upload_repo}")
-
-        prompt="hello"
-
-        if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template is not None:
-            messages = [{{"role": "user", "content": prompt}}]
-            prompt = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-
-        response = generate(model, tokenizer, prompt=prompt, verbose=True)
-        ```
-        """
-    )
-    card.save(os.path.join(path, "README.md"))
-
-    logging.set_verbosity_info()
-
-    api = HfApi()
-    api.create_repo(repo_id=upload_repo, exist_ok=True)
-    api.upload_folder(
-        folder_path=path,
-        repo_id=upload_repo,
-        repo_type="model",
-        multi_commits=True,
-        multi_commits_verbose=True,
-    )
-    print(f"Upload successful, go to https://huggingface.co/{upload_repo} for details.")
+#     Returns:
+#         list: List of weight shards.
+#     """
+#     max_file_size_bytes = max_file_size_gb << 30
+#     shards = []
+#     shard, shard_size = {}, 0
+#     for k, v in weights.items():
+#         if shard_size + v.nbytes > max_file_size_bytes:
+#             shards.append(shard)
+#             shard, shard_size = {}, 0
+#         shard[k] = v
+#         shard_size += v.nbytes
+#     shards.append(shard)
+#     return shards
 
 
-def save_weights(
-    save_path: Union[str, Path],
-    weights: Dict[str, Any],
-    *,
-    donate_weights: bool = False,
-) -> None:
-    """Save model weights into specified directory."""
-    if isinstance(save_path, str):
-        save_path = Path(save_path)
-    save_path.mkdir(parents=True, exist_ok=True)
+# def save_weights( ### handled in the trainer
+#     save_path: Union[str, Path],
+#     weights: Dict[str, Any],
+#     *,
+#     donate_weights: bool = False,
+# ) -> None:
+#     """Save model weights into specified directory."""
+#     if isinstance(save_path, str):
+#         save_path = Path(save_path)
+#     save_path.mkdir(parents=True, exist_ok=True)
 
-    shards = make_shards(weights)
-    shards_count = len(shards)
-    shard_file_format = (
-        "model-{:05d}-of-{:05d}.safetensors"
-        if shards_count > 1
-        else "model.safetensors"
-    )
+#     shards = make_shards(weights)
+#     shards_count = len(shards)
+#     shard_file_format = (
+#         "model-{:05d}-of-{:05d}.safetensors"
+#         if shards_count > 1
+#         else "model.safetensors"
+#     )
 
-    total_size = sum(v.nbytes for v in weights.values())
-    index_data = {"metadata": {"total_size": total_size}, "weight_map": {}}
+#     total_size = sum(v.nbytes for v in weights.values())
+#     index_data = {"metadata": {"total_size": total_size}, "weight_map": {}}
 
-    # Write the weights and make sure no references are kept other than the
-    # necessary ones
-    if donate_weights:
-        weights.clear()
-        del weights
+#     # Write the weights and make sure no references are kept other than the
+#     # necessary ones
+#     if donate_weights:
+#         weights.clear()
+#         del weights
 
-    for i in range(len(shards)):
-        shard = shards[i]
-        shards[i] = None
-        shard_name = shard_file_format.format(i + 1, shards_count)
-        shard_path = save_path / shard_name
+#     for i in range(len(shards)):
+#         shard = shards[i]
+#         shards[i] = None
+#         shard_name = shard_file_format.format(i + 1, shards_count)
+#         shard_path = save_path / shard_name
 
-        mx.save_safetensors(str(shard_path), shard, metadata={"format": "mlx"})
+#         mx.save_safetensors(str(shard_path), shard, metadata={"format": "mlx"})
 
-        for weight_name in shard.keys():
-            index_data["weight_map"][weight_name] = shard_name
-        del shard
+#         for weight_name in shard.keys():
+#             index_data["weight_map"][weight_name] = shard_name
+#         del shard
 
-    index_data["weight_map"] = {
-        k: index_data["weight_map"][k] for k in sorted(index_data["weight_map"])
-    }
+#     index_data["weight_map"] = {
+#         k: index_data["weight_map"][k] for k in sorted(index_data["weight_map"])
+#     }
 
-    with open(save_path / "model.safetensors.index.json", "w") as f:
-        json.dump(
-            index_data,
-            f,
-            indent=4,
-        )
+#     with open(save_path / "model.safetensors.index.json", "w") as f:
+#         json.dump(
+#             index_data,
+#             f,
+#             indent=4,
+#         )
 
 
 def quantize_model(
     model: nn.Module,
     config: dict,
-    q_group_size: int,
-    q_bits: int,
+    q_group_size: int = 64,
+    q_bits: int = 4,
     quant_predicate: Optional[
         Callable[[str, nn.Module, dict], Union[bool, dict]]
     ] = None,
@@ -462,86 +396,86 @@ def quantize_model(
     return quantized_weights, quantized_config
 
 
-def save_config(
-    config: dict,
-    config_path: Union[str, Path],
-) -> None:
-    """Save the model configuration to the ``config_path``.
+# def save_config( ### handled in the trainer
+#     config: dict,
+#     config_path: Union[str, Path],
+# ) -> None:
+#     """Save the model configuration to the ``config_path``.
 
-    The final configuration will be sorted before saving for better readability.
+#     The final configuration will be sorted before saving for better readability.
 
-    Args:
-        config (dict): The model configuration.
-        config_path (Union[str, Path]): Model configuration file path.
-    """
-    # Clean unused keys
-    config.pop("_name_or_path", None)
+#     Args:
+#         config (dict): The model configuration.
+#         config_path (Union[str, Path]): Model configuration file path.
+#     """
+#     # Clean unused keys
+#     config.pop("_name_or_path", None)
 
-    # sort the config for better readability
-    config = dict(sorted(config.items()))
+#     # sort the config for better readability
+#     config = dict(sorted(config.items()))
 
-    # write the updated config to the config_path (if provided)
-    with open(config_path, "w") as fid:
-        json.dump(config, fid, indent=4)
+#     # write the updated config to the config_path (if provided)
+#     with open(config_path, "w") as fid:
+#         json.dump(config, fid, indent=4)
 
 
-def convert(
-    hf_path: str,
-    mlx_path: str = "mlx_model",
-    quantize: bool = False,
-    q_group_size: int = 64,
-    q_bits: int = 4,
-    dtype: str = "float16",
-    upload_repo: str = None,
-    revision: Optional[str] = None,
-    dequantize: bool = False,
-    quant_predicate: Optional[
-        Callable[[str, nn.Module, dict], Union[bool, dict]]
-    ] = None,
-):
-    # Check the save path is empty
-    if isinstance(mlx_path, str):
-        mlx_path = Path(mlx_path)
+# def convert(
+#     hf_path: str,
+#     mlx_path: str = "mlx_model",
+#     quantize: bool = False,
+#     q_group_size: int = 64,
+#     q_bits: int = 4,
+#     dtype: str = "float16",
+#     upload_repo: str = None,
+#     revision: Optional[str] = None,
+#     dequantize: bool = False,
+#     quant_predicate: Optional[
+#         Callable[[str, nn.Module, dict], Union[bool, dict]]
+#     ] = None,
+# ):
+#     # Check the save path is empty
+#     if isinstance(mlx_path, str):
+#         mlx_path = Path(mlx_path)
 
-    if mlx_path.exists():
-        raise ValueError(
-            f"Cannot save to the path {mlx_path} as it already exists."
-            " Please delete the file/directory or specify a new path to save to."
-        )
+#     if mlx_path.exists():
+#         raise ValueError(
+#             f"Cannot save to the path {mlx_path} as it already exists."
+#             " Please delete the file/directory or specify a new path to save to."
+#         )
 
-    print("[INFO] Loading")
-    model_path = get_model_path(hf_path, revision=revision)
-    model, config, tokenizer = fetch_from_hub(model_path, lazy=True)
+#     print("[INFO] Loading")
+#     model_path = get_model_path(hf_path, revision=revision)
+#     model, config, tokenizer = fetch_from_hub(model_path, lazy=True)
 
-    weights = dict(tree_flatten(model.parameters()))
-    dtype = getattr(mx, dtype)
-    weights = {k: v.astype(dtype) for k, v in weights.items()}
+#     weights = dict(tree_flatten(model.parameters()))
+#     dtype = getattr(mx, dtype)
+#     weights = {k: v.astype(dtype) for k, v in weights.items()}
 
-    if quantize and dequantize:
-        raise ValueError("Choose either quantize or dequantize, not both.")
+#     if quantize and dequantize:
+#         raise ValueError("Choose either quantize or dequantize, not both.")
 
-    if quantize:
-        print("[INFO] Quantizing")
-        model.load_weights(list(weights.items()))
-        weights, config = quantize_model(
-            model, config, q_group_size, q_bits, quant_predicate=quant_predicate
-        )
+#     if quantize:
+#         print("[INFO] Quantizing")
+#         model.load_weights(list(weights.items()))
+#         weights, config = quantize_model(
+#             model, config, q_group_size, q_bits, quant_predicate=quant_predicate
+#         )
 
-    if dequantize:
-        print("[INFO] Dequantizing")
-        model = dequantize_model(model)
-        weights = dict(tree_flatten(model.parameters()))
+#     if dequantize:
+#         print("[INFO] Dequantizing")
+#         model = dequantize_model(model)
+#         weights = dict(tree_flatten(model.parameters()))
 
-    del model
-    save_weights(mlx_path, weights, donate_weights=True)
+#     del model
+#     save_weights(mlx_path, weights, donate_weights=True)
 
-    py_files = glob.glob(str(model_path / "*.py"))
-    for file in py_files:
-        shutil.copy(file, mlx_path)
+#     py_files = glob.glob(str(model_path / "*.py"))
+#     for file in py_files:
+#         shutil.copy(file, mlx_path)
 
-    tokenizer.save_pretrained(mlx_path)
+#     tokenizer.save_pretrained(mlx_path)
 
-    save_config(config, config_path=mlx_path / "config.json")
+#     save_config(config, config_path=mlx_path / "config.json")
 
-    if upload_repo is not None:
-        upload_to_hub(mlx_path, upload_repo, hf_path)
+#     if upload_repo is not None:
+#         upload_to_hub(mlx_path, upload_repo, hf_path)

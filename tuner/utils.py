@@ -1,7 +1,4 @@
-
 # Copyright © 2024 Apple Inc.
-import json
-import types
 from pathlib import Path
 from typing import Dict
 
@@ -9,10 +6,6 @@ import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as opt
 from mlx.utils import tree_flatten, tree_unflatten
-
-# from ..models.switch_layers import QuantizedSwitchLinear, SwitchLinear
-# from .dora import DoRAEmbedding, DoRALinear
-# from .lora import LoRAEmbedding, LoRALinear, LoRASwitchLinear
 
 
 def build_schedule(schedule_config: Dict):

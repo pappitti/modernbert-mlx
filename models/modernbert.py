@@ -1,6 +1,6 @@
 import math
 from dataclasses import dataclass
-from typing import Optional, Tuple, Dict, Union, Literal, Any
+from typing import Optional, Dict, Literal, Any
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -11,8 +11,8 @@ from .base import BaseModelArgs
 ### NOTE : removed all the attention_outputs (eager mode), may add id back later
 ### given no flash attention 2, padded/unpadded was also removed ?
 ### TODO: 
-## general model
-# checkpoint
+# review the padding strategy
+# review compiling opportunities
 
 
 def rotate_half(x):
@@ -55,38 +55,63 @@ class ModelArgs(BaseModelArgs):
     num_attention_heads: int
     ### hidden_activation : str = "gelu" ## should not be necessary, we'd just apply gelu.
     max_position_embeddings: Optional[int] = None
-    norm_eps: float = 1e-05,
-    norm_bias : bool = False,
-    global_rope_theta : float = 160000.0,
-    attention_bias: bool = False,
-    attention_dropout : float =0.0,
-    global_attn_every_n_layers : int =3,
-    local_attention : int =128,
-    local_rope_theta: float = 10000 ,
-    embedding_dropout : float =0.0,
-    mlp_bias: bool = False,
-    mlp_dropout : float = 0.0 ,
-
-    initializer_range=0.02, # relevant for MLX?
-    initializer_cutoff_factor=2.0, # relevant for MLX?
-    pad_token_id=50283, ## relevant?
-    eos_token_id=50282,
-    bos_token_id=50281,
-    cls_token_id=50281,
-    sep_token_id=50282,
-    decoder_bias=True,
-    classifier_pooling: Literal["cls", "mean"] = "cls",
-    classifier_dropout=0.0, 
-    classifier_bias=False,
-    # classifier_activation="gelu"
-    # deterministic_flash_attn=False ## for torch only, to remove???
-    sparse_prediction=False 
-    sparse_pred_ignore_index=-100 
-    # reference_compile=None ## for torch only, to remove???
-
-    # output_attentions: bool = False # not relevant if we only use sdpa
+    norm_eps: float = 1e-05
+    norm_bias : bool = False
+    global_rope_theta : float = 160000.0
+    attention_bias: bool = False
+    attention_dropout : float =0.0
+    global_attn_every_n_layers : int =3
+    local_attention : int =128
+    local_rope_theta: float = 10000
+    embedding_dropout : float =0.0
+    mlp_bias: bool = False
+    mlp_dropout : float = 0.0
+    initializer_range=0.02 # relevant for MLX?
+    initializer_cutoff_factor=2.0 # relevant for MLX?
+    pad_token_id=50283
+    eos_token_id=50282
+    bos_token_id=50281
+    cls_token_id=50281
+    sep_token_id=50282
     output_hidden_states: bool = False 
     use_return_dict: bool = True 
+    # output_attentions: bool = False # not relevant if we only use sdpa
+    # deterministic_flash_attn=False ## for torch only, to remove???
+    # reference_compile=None ## for torch only, to remove???
+    ### pipeline args
+    decoder_bias=True,
+    classifier_pooling: Literal["cls", "mean"] = "cls"
+    classifier_dropout=0.0 
+    classifier_bias=False
+    # classifier_activation="gelu"
+    sparse_prediction=True ### True seems a more appropriate value for MLM
+    sparse_pred_ignore_index=-100 
+    is_regression: Optional[bool] = None
+    label2id: Optional[Dict[str, int]] = None
+    id2label: Optional[Dict[int, str]] = None
+    label_candidates: Optional[Dict[str, Any]] = None
+
+    @property
+    def num_labels(self) -> int:
+        """
+        Number of labels is determined by:
+        - For regression or binary with sigmoid: 1
+        - For classification: length of id2label mapping
+        """
+        if self.is_regression:
+            return 1
+        
+        # if self.pipeline_config.get("binary_sigmoid", False):
+        #     return 1
+            
+        if self.id2label is None:
+            raise ValueError(
+                "id2label mapping must be provided for categorical classification. "
+                "For regression or binary classification with sigmoid output, "
+                "set is_regression=True or binary_sigmoid=True in pipeline_config."
+            )
+            
+        return len(self.id2label)
 
 
 class ModernBertRotaryEmbedding(nn.Module):
@@ -101,24 +126,24 @@ class ModernBertRotaryEmbedding(nn.Module):
     ### TBC for training
     @property
     def inv_freq(self):
-        return 1.0 / (self.base ** (mx.arange(0, self.dim, 2, dtype=mx.int32) / self.dim))
+        return 1.0 / (self.base ** (mx.arange(0, self.dim, 2, dtype=mx.int32) / self.dim)) # [ dim/2 ]
 
     def __call__(self, x, position_ids, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
-        inv_freq_expanded = mx.expand_dims(self.inv_freq, [0, 2])
+        inv_freq_expanded = mx.expand_dims(self.inv_freq, [0, 2]) # [1, dim/2, 1]
         inv_freq_expanded = mx.broadcast_to(
             inv_freq_expanded,
             [position_ids.shape[0], inv_freq_expanded.shape[1], 1]
-        )
+        ) # [bs, dim/2, 1]
 
-        position_ids_expanded = mx.expand_dims(position_ids.astype(mx.float32), 1)
+        position_ids_expanded = mx.expand_dims(position_ids.astype(mx.float32), 1) # [bs, 1, seq_len]
     
         # Computing position embeddings
-        freqs = mx.matmul(inv_freq_expanded, position_ids_expanded)
-        freqs = mx.transpose(freqs, [0, 2, 1])
+        freqs = mx.matmul(inv_freq_expanded, position_ids_expanded) # [bs, dim/2, seq_len]
+        freqs = mx.transpose(freqs, [0, 2, 1]) # [bs, seq_len, dim/2]
         
         # Duplicating frequencies
-        emb = mx.concatenate([freqs, freqs], axis=-1)
+        emb = mx.concatenate([freqs, freqs], axis=-1) # [bs, seq_len, dim]
         
         # Computing sin and cos
         cos = mx.cos(emb)
@@ -132,7 +157,7 @@ class ModernBertEmbeddings(nn.Module):
     Same as BertEmbeddings with a tiny tweak for positional embeddings indexing.
     """
     def __init__(self, config: ModelArgs):
-        super().__init__() ## need this?
+        super().__init__() 
         self.tok_embeddings = nn.Embedding(config.vocab_size, config.hidden_size)
         self.norm = nn.LayerNorm(config.hidden_size, eps=config.norm_eps, bias=config.norm_bias) 
         self.drop = nn.Dropout(p=config.embedding_dropout)
@@ -211,7 +236,7 @@ class ModernBertAttention(nn.Module):
             attention_mask = None,
             sliding_window_mask = None,
             position_ids=None,
-            # output_attentions: Optional[bool] = False, ### is not used with sdpa (only with flash attention 2 and eager mode),
+            # output_attentions: Optional[bool] = False, ### is not used with sdpa (only with eager mode),
             **kwargs
         ):
         qkv = self.Wqkv(hidden_states)
@@ -346,7 +371,7 @@ class ModernBertModel(nn.Module):
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
             # if self.gradient_checkpointing and self.training:
-            #     ### TODO ?
+            #     ### already covered by trainer, delete after confirming 
             #     layer_outputs = mx.checkpoint(
             #         encoder_layer.__call__,
             #         hidden_states,
@@ -444,35 +469,37 @@ class Model(nn.Module):
             input_ids,
             attention_mask=attention_mask,
             position_ids=position_ids,
-            output_hidden_states=output_hidden_states,
+            output_hidden_states=None, # Not needed, only last_hidden_state is returned
             return_dict=return_dict,
         )
-        hidden_states = encoder_outputs["last_hidden_state"] if isinstance(encoder_outputs, dict) else encoder_outputs[0] 
+        hidden_state = encoder_outputs["last_hidden_state"] if isinstance(encoder_outputs, dict) else encoder_outputs[0] 
         
         # Do pooling here (unlike BERT)
         if self.config.classifier_pooling == "cls":
-            pooled = hidden_states[:, 0]
+            pooled = hidden_state[:, 0]
         elif self.config.classifier_pooling == "mean":                
             attention_mask = mx.expand_dims(attention_mask, -1)
-            pooled = mx.sum(hidden_states * attention_mask, axis=1) / mx.sum(attention_mask, axis=1)
+            pooled = mx.sum(hidden_state * attention_mask, axis=1) / mx.sum(attention_mask, axis=1)
             
         # normalization
         pooled = pooled / mx.sqrt(mx.sum(pooled * pooled, axis=-1, keepdims=True) + 1e-12)
 
         loss = None
         if labels is not None:
-            # Compute cosine similarity between all pairs
-            similarity = mx.matmul(pooled, pooled.T)
-            # Compute MSE loss between computed similarities and target similarities
-            loss = nn.losses.mse_loss(similarity, labels)
+            raise NotImplementedError('training loop for feature extraction not finalized')
+            ### TODO 
+            # # Compute cosine similarity between all pairs
+            # similarity = mx.matmul(pooled, pooled.T)
+            # # Compute MSE loss between computed similarities and target similarities
+            # loss = nn.losses.mse_loss(similarity, labels)
 
         if not return_dict:
-            return (loss,pooled, hidden_states) 
+            return (loss,pooled, hidden_state) 
 
         return {
             "loss": loss,
             "embeddings": pooled,
-            "hidden_states": hidden_states,
+            "last_hidden_states": hidden_state,
         }
     
     def sanitize(self, weights):
@@ -604,8 +631,7 @@ class ModelForMaskedLM(nn.Module):
                 )
             
         if not return_dict:
-            output = (logits,) + outputs[1:]
-            return ((loss,) + output) if loss is not None else output
+            return [loss, logits, outputs[1:]]
             
         return {
             "loss": loss,
@@ -632,21 +658,46 @@ class ModelForSequenceClassification(nn.Module):
         super().__init__()
         self.config = config
         self.num_labels = config.num_labels
+        self.is_regression = config.is_regression
+        self.label_candidates = config.label_candidates
         
         self.model = ModernBertModel(config)
         self.head = ModernBertPredictionHead(config)
         self.drop = nn.Dropout(p=config.classifier_dropout)
-        self.classifier = nn.Linear(config.hidden_size, config.num_labels, bias=config.classifier_bias)
+        self.classifier = nn.Linear(config.hidden_size, config.num_labels, bias=True) ### bias=config.classifier_bias removed because mismatch with HF checkpoint
+    
+    def _process_outputs(self, logits: mx.array) -> mx.array:
+        """Apply the appropriate activation function to the logits."""
+        if self.is_regression:
+            return logits  # No activation for regression
+        elif self.num_labels == 1:
+            return mx.sigmoid(logits)  # Binary classification
+        else:
+            # Using softmax for multi-class classification
+            return mx.softmax(logits, axis=-1)
+
+    def _compute_loss(self, logits: mx.array, labels: mx.array) -> mx.array:
+        """Compute the appropriate loss based on label characteristics."""
+        if self.is_regression:
+            return nn.losses.mse_loss(logits.squeeze(), labels.squeeze())
+        elif self.num_labels == 1:
+            return nn.losses.binary_cross_entropy(mx.sigmoid(logits), labels)
+        else:
+            return nn.losses.cross_entropy(
+                logits.reshape(-1, self.num_labels),
+                labels.reshape(-1)
+            )
 
     def __call__(
         self,
         input_ids,
         attention_mask: Optional[mx.array] = None,
-        position_ids: Optional[mx.array] = None,
+        position_ids: Optional[mx.array] = None, ### need this?
         labels: Optional[mx.array] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = True,
     ) -> Dict:
+        ### TODO : zero-shot classification
         if attention_mask is None:
             batch_size, seq_len = input_ids.shape
             attention_mask = mx.ones((batch_size, seq_len))
@@ -673,29 +724,19 @@ class ModelForSequenceClassification(nn.Module):
         pooled = self.drop(pooled)
         logits = self.classifier(pooled)
 
+        # Process logits for inference
+        processed_logits = self._process_outputs(logits)
+
         loss = None
         if labels is not None :
-            if self.num_labels == 1:
-                # Regression
-                loss = nn.losses.mse_loss(logits.squeeze(), labels.squeeze())
-            else:
-                if len(labels.shape) == 1 or labels.shape[-1] == 1:
-                    # Single-label classification
-                    loss = nn.losses.cross_entropy(
-                        logits.reshape(-1, self.num_labels),
-                        labels.reshape(-1)
-                    )
-                else:
-                    # Multi-label classification
-                    loss = nn.losses.binary_cross_entropy(logits, labels)
+            loss = self._compute_loss(logits, labels)
 
         if not return_dict:
-            output = (logits,)
-            return ((loss,) + output) if loss is not None else output
+            return [loss, processed_logits, outputs[1:]]
 
         return {
             "loss": loss,
-            "logits": logits,
+            "probs": processed_logits,
             "hidden_states": outputs.get("hidden_states", None),
         }
     
@@ -707,21 +748,24 @@ class ModelForSequenceClassification(nn.Module):
                 continue
             # if k in ["head.dense.bias"]:  # Add any other weights that should be skipped
             #     continue
+            elif k.startswith("bert"):
+                # Handle legacy BERT naming if needed
+                new_k = k.replace("bert.", "model.")
+                sanitized_weights[new_k] = v
             else:
                 sanitized_weights[k] = v
         return sanitized_weights
     
-
 class ModelForTokenClassification(nn.Module):
     def __init__(self, config: ModelArgs):
         super().__init__()
-        self.config = config
+        self.config = config       
         self.num_labels = config.num_labels
-        
+
         self.model = ModernBertModel(config)
         self.head = ModernBertPredictionHead(config)
         self.drop = nn.Dropout(p=config.classifier_dropout)
-        self.classifier = nn.Linear(config.hidden_size, config.num_labels, bias=config.classifier_bias)
+        self.classifier = nn.Linear(config.hidden_size, config.num_labels, bias=config.classifier_bias) 
 
     def __call__(
         self,
@@ -760,8 +804,7 @@ class ModelForTokenClassification(nn.Module):
             )
 
         if not return_dict:
-            output = (logits,)
-            return ((loss,) + output) if loss is not None else output
+            return [loss, logits, outputs[1:]]
 
         return {
             "loss": loss,

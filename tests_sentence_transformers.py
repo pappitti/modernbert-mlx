@@ -4,7 +4,7 @@ from utils import load
 def main():
     # Load the model and tokenizer
     model_name = "nomic-ai/modernbert-embed-base" #makiart/ft-modern-bert-emb-all-nli, tasksource/ModernBERT-base-embed, nomic-ai/modernbert-embed-base 
-    model, tokenizer = load(model_name, pipeline="sentence_transformers") 
+    model, tokenizer = load(model_name, pipeline="sentence-transformers") 
     max_position_embeddings = getattr(model.config,"max_position_embeddings",512)
     print(max_position_embeddings)
 
