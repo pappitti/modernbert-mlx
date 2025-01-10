@@ -1,6 +1,6 @@
 import argparse
 import mlx.core as mx
-from utils import load, PIPELINES
+from .utils import load, PIPELINES
 from tuner.datasets import load_dataset
 from tuner.trainer import Trainer
 
@@ -16,18 +16,24 @@ def main():
         raise ValueError(f"Task type {task_type} not supported. Choose from {PIPELINES.items()}")
     
     output_dir = model_path.split("/")[-1] + "_" + task_type
+
+    ### TODO: make sure that labels are ids not text. if not, convert them to using label2id
+    ## update id2label and label2id in the model.config, update num_labels accordingly
+
+    if task_type == "text-classification" and is_regression:
+        model_config={"is_regression":True}
     
     # Load model and tokenizer
-    model, tokenizer = load(model_path, pipeline=task_type)
+    model, tokenizer = load(
+        model_path, 
+        model_config=model_config, 
+        pipeline=task_type
+    )
     
     # Load datasets
     train_dataset, valid_dataset, test_dataset = load_dataset(dataset_id, task_type)
 
-    ### TODO: make sur that labels are ids not text. if not, convert them to using label2id
-    ## update id2label and label2id in the model.config, update num_labels accordingly
-
-    if task_type == "text-classification" and is_regression:
-        model.is_regression = True
+    
     
     # Training arguments
     training_args = {

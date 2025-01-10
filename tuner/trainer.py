@@ -116,7 +116,7 @@ class Trainer:
         optimizer = None
     ):
         self.model = model
-        self.tokenizer = tokenizer
+        self.tokenizer = tokenizer._tokenizer ### tokenizer is a wrapper around the HF tokenizer
         self.args = training_args
         self.train_dataset = train_dataset
         self.eval_dataset = eval_dataset
@@ -168,21 +168,38 @@ class Trainer:
         
         # Add task-specific labels
         ### TODO : do better than this (once all tasks are implemented)
-        if self.args.task_type == "text_classification":
+        if self.args.task_type == "text-classification" :
             labels = [example["label"] for example in batch]  # These are already IDs
             if self.model.is_regression:
                 model_inputs["labels"] = mx.array(labels, dtype=mx.float32)
             else:
                 model_inputs["labels"] = mx.array(labels)
-        elif self.args.task_type == "token_classification":
+
+        elif self.args.task_type == "token-classification":
             labels = [example["label"] for example in batch]
             model_inputs["labels"] = mx.array(labels)
-        elif self.args.task_type == "sentence_transformers":
-            raise NotImplementedError('training loop for feature extraction not finalized')
-            ### Currently similarity score is not an outpout of Model, may need to be reworked to allow feature extraction training
-            ### TODO
-            # model_inputs["labels"] = mx.array(batch["similarity_score"])
-        elif self.args.task_type == "masked_lm":
+
+        elif self.args.task_type == "sentence-transformers" or self.args.task_type == "sentence-similarity":
+            similarity_scores = [example["similarity_score"] for example in batch]
+            model_inputs["similarity_score"] = mx.array(similarity_scores, dtype=mx.float32)
+            ### what's the format of the reference_texts?
+            ### placeholder below
+            reference_texts = [example["reference_text"] for example in batch]
+            reference_encoded = self.tokenizer(
+                reference_texts,
+                padding=True,
+                truncation=True,
+                max_length=self.args.max_length,
+                return_tensors="mlx"
+            )
+            model_inputs["reference_input_ids"] = reference_encoded["input_ids"]
+            model_inputs["reference_attention_mask"] = reference_encoded["attention_mask"]
+
+        elif self.args.task_type == "zero-shot-classification":
+            labels = [example["label"] for example in batch]
+            model_inputs["labels"] = mx.array(labels)
+            
+        elif self.args.task_type == "masked-lm":
             # For MLM, we need to mask some tokens
             inputs, labels = create_mlm_masks(
                 model_inputs["input_ids"],

@@ -1,14 +1,14 @@
 import mlx.core as mx
-from utils import load
+from utils.utils import load
 
 '''
 answerdotai/ModernBERT-base IS NOT TRAINED FOR SENTENCE SIMILARITY
-SEE TESTS_SENTENCE_TRANSFORMERS.PY FOR MODELS TRAINED TO GENERATE EMBEDDINGS FOR SENTENCE TRANSFORMERS
+SEE SENTENCETRANSFORMERS.PY FOR MODELS TRAINED TO GENERATE EMBEDDINGS FOR SENTENCE TRANSFORMERS
 '''
 
 def main():
     # Load the model and tokenizer
-    model, tokenizer = load("answerdotai/ModernBERT-base", pipeline="embeddings") #answerdotai/ModernBERT-base
+    model, tokenizer = load("answerdotai/ModernBERT-base", pipeline="embeddings") 
     max_position_embeddings = getattr(model.config,"max_position_embeddings",512)
     print(max_position_embeddings)
 
@@ -22,7 +22,7 @@ def main():
             max_length= max_position_embeddings
         )
         outputs = model(input_ids)
-        embeddings=outputs[1] #outputs[0] is the last_hidden_state, outputs[1] is the pooled_output
+        embeddings=outputs['embeddings'] # by default, output is returned as a dict. if not, outputs[0] is the pooled_output and outputs[1]
 
         return embeddings
 
@@ -40,9 +40,9 @@ def main():
     def cosine_similarity(a, b):
         # Compute dot product and magnitudes using MLX operations
         dot_product = mx.sum(a * b)
-        # norm_a = mx.sqrt(mx.sum(a * a)) ## removed because already normalized in Model
-        # norm_b = mx.sqrt(mx.sum(b * b)) ## removed because already normalized in Model
-        return dot_product ## / (norm_a * norm_b) removed because already normalized in Model
+        norm_a = mx.sqrt(mx.sum(a * a)) 
+        norm_b = mx.sqrt(mx.sum(b * b)) 
+        return dot_product / (norm_a * norm_b) 
 
     # Calculate similarity matrix
     n = len(embeddings)

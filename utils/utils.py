@@ -18,8 +18,8 @@ from huggingface_hub import snapshot_download
 from transformers import PreTrainedTokenizer
 
 # Local imports
-from tokenizer_utils import TokenizerWrapper, load_tokenizer
-# from tuner.utils import dequantize as dequantize_model 
+from .tokenizer_utils import TokenizerWrapper, load_tokenizer
+# Training imports 
 from tuner.utils import nparams #, load_adapters ### removing LORA given it does not really make sense for small models
 
 PIPELINES = [
@@ -28,6 +28,8 @@ PIPELINES = [
     "text-classification", 
     "token-classification",
     "sentence-transformers",
+    "zero-shot-classification",
+    "sentence-similarity"
 ]
 
 MODEL_REMAPPING = {
@@ -79,6 +81,12 @@ def _get_classes(config: dict, pipeline: Optional[str] = 'masked-lm'):
     
     if pipeline == "sentence-transformers":
         return arch.ModelForSentenceTransformers, arch.ModelArgs
+    
+    if pipeline == "zero-shot-classification":
+        return arch.ModelForZeroShotClassification, arch.ModelArgs
+    
+    if pipeline == "sentence-similarity":
+        return arch.ModelForSentenceSimilarity, arch.Model
 
     ### should not reach here
     return arch.Model, arch.ModelArgs

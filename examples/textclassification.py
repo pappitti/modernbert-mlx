@@ -1,13 +1,31 @@
 import mlx.core as mx
-from utils import load
+from utils.utils import load
+
+tested_models = {
+    "multilabel":[
+        "clapAI/modernBERT-base-multilingual-sentiment",
+        "argilla/ModernBERT-domain-classifier",
+        "andriadze/modernbert-chat-moderation-X-V2",
+    ],
+    "regression":[
+        "Forecast-ing/modernBERT-content-regression" # Used it to confirm that regression works but I don't recommend this specific checkpoint
+    ]   
+}
 
 def main():
+    
+    is_regression = False # Set to True for regression models
+    
     # Load the model and tokenizer
-    model, tokenizer = load("andriadze/modernbert-chat-moderation-X-V2", pipeline='text-classification') #argilla/ModernBERT-domain-classifier
+    model, tokenizer = load(
+        "clapAI/modernBERT-base-multilingual-sentiment",
+        model_config={"is_regression":is_regression}, 
+        pipeline='text-classification'
+    ) 
     max_position_embeddings = getattr(model.config,"max_position_embeddings",512)
 
     # Prepare the input text
-    text = "Grandma's cat felt very lonely during the winter holidays."
+    text = "Leaves fell off the trees after the windstorm."
 
     # Tokenize the input
     tokens = tokenizer.encode(
@@ -17,13 +35,12 @@ def main():
         truncation=True, 
         max_length= max_position_embeddings
     )
-    # input_ids = tokens[None,:] # Add batch dimension
 
     # Forward pass
     outputs = model(input_ids=tokens, return_dict=True)
 
     # Get the processed predictions for the first (and only) item in batch
-    predictions = outputs["probs"][0] # Shape: (num_label,)
+    predictions = outputs["probabilities"][0] # Shape: (num_label,)
 
     top_k = 5
 

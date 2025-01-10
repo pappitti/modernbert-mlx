@@ -1,9 +1,13 @@
 import mlx.core as mx
-from utils import load
+from utils.utils import load
+
+tested_models = [
+    "answerdotai/ModernBERT-base"
+]
 
 def main():
     # Load the model and tokenizer
-    model, tokenizer = load("answerdotai/ModernBERT-base", pipeline='masked-lm') #answerdotai/ModernBERT-base #sentence-transformers/all-MiniLM-L6-v2
+    model, tokenizer = load("answerdotai/ModernBERT-base", pipeline='masked-lm')
 
     # Prepare the input text
     text = "The capital of France is [MASK]."
@@ -12,11 +16,9 @@ def main():
     tokens = tokenizer.encode(text)
     input_ids = mx.array([tokens])  # Add batch dimension
 
-
     # Find the position of the mask token
     mask_token_id = tokenizer.mask_token_id
     mask_position = tokens.index(mask_token_id)
-
 
     # Forward pass
     outputs = model(input_ids=input_ids, return_dict=True)

@@ -5,45 +5,13 @@ from typing import Optional, Dict, Literal, Any
 import mlx.core as mx
 import mlx.nn as nn
 
-from .base import BaseModelArgs
+from .base import BaseModelArgs, compute_similarity, apply_rotary_pos_emb 
 
-
-### NOTE : removed all the attention_outputs (eager mode), may add id back later
-### given no flash attention 2, padded/unpadded was also removed ?
+### NOTE : removed all the attention_outputs (eager mode), may add it back later
+### given no flash attention 2, padded/unpadded was also removed
 ### TODO: 
 # review the padding strategy
 # review compiling opportunities
-
-
-def rotate_half(x):
-    """Rotates half the hidden dims of the input."""
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
-    return mx.concatenate([-x2, x1], axis=-1)
-
-def apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1):
-    """Applies Rotary Position Embedding to the query and key tensors.
-
-    Args:
-        q : The query tensor.
-        k : The key tensor.
-        cos : The cosine part of the rotary embedding.
-        sin : The sine part of the rotary embedding.
-        unsqueeze_dim (`int`, *optional*, defaults to 1):
-            The 'unsqueeze_dim' argument specifies the dimension along which to unsqueeze cos[position_ids] and
-            sin[position_ids] so that they can be properly broadcasted to the dimensions of q and k. For example, note
-            that cos[position_ids] and sin[position_ids] have the shape [batch_size, seq_len, head_dim]. Then, if q and
-            k have the shape [batch_size, heads, seq_len, head_dim], then setting unsqueeze_dim=1 makes
-            cos[position_ids] and sin[position_ids] broadcastable to the shapes of q and k. Similarly, if q and k have
-            the shape [batch_size, seq_len, heads, head_dim], then set unsqueeze_dim=2.
-    Returns:
-        `tuple` comprising of the query and key tensors rotated using the Rotary Position Embedding.
-    """
-    cos = mx.expand_dims(cos, axis=unsqueeze_dim)
-    sin = mx.expand_dims(sin, axis=unsqueeze_dim)
-    q_embed = (q * cos) + (rotate_half(q) * sin)
-    k_embed = (k * cos) + (rotate_half(k) * sin)
-    return q_embed, k_embed
 
 @dataclass
 class ModelArgs(BaseModelArgs):
@@ -78,6 +46,7 @@ class ModelArgs(BaseModelArgs):
     # output_attentions: bool = False # not relevant if we only use sdpa
     # deterministic_flash_attn=False ## for torch only, to remove???
     # reference_compile=None ## for torch only, to remove???
+
     ### pipeline args
     decoder_bias=True,
     classifier_pooling: Literal["cls", "mean"] = "cls"
@@ -89,15 +58,17 @@ class ModelArgs(BaseModelArgs):
     is_regression: Optional[bool] = None
     label2id: Optional[Dict[str, int]] = None
     id2label: Optional[Dict[int, str]] = None
-    label_candidates: Optional[Dict[str, Any]] = None
+    # label_candidates: Optional[Dict[str, Any]] = None
 
     @property
     def num_labels(self) -> int:
         """
         Number of labels is determined by:
+        - For zero-shot classification: length of label_candidates
         - For regression or binary with sigmoid: 1
         - For classification: length of id2label mapping
         """
+        
         if self.is_regression:
             return 1
         
@@ -168,6 +139,7 @@ class ModernBertEmbeddings(nn.Module):
         embeddings = self.drop(embeddings)
         return embeddings
 
+
 class ModernBertMLP(nn.Module):
     """Applies the GLU at the end of each ModernBERT layer.
 
@@ -188,6 +160,7 @@ class ModernBertMLP(nn.Module):
         split_dim = x.shape[-1] // 2
         input, gate = x[:, :, :split_dim], x[:, :, split_dim:] ### I need to understand this better : https://arxiv.org/pdf/2002.05202v1
         return self.Wo(self.drop(self.act(input) * gate))
+
 
 class ModernBertAttention(nn.Module):
     """Performs multi-headed self attention on a batch of unpadded sequences.
@@ -353,7 +326,7 @@ class ModernBertModel(nn.Module):
         batch_size, seq_len = input_ids.shape[:2]
 
         if attention_mask is None:
-            attention_mask = mx.ones((batch_size, seq_len)) ### not sure why transformers decided to do this and then _update_attention_mask() below
+            attention_mask = mx.ones((batch_size, seq_len)) ### updated with _update_attention_mask() below
 
         if position_ids is None:
             position_ids = mx.arange(seq_len, dtype=mx.int32)[None, :]
@@ -441,10 +414,16 @@ class ModernBertModel(nn.Module):
         return global_attention_mask, sliding_window_mask
 
 
-### for embeddings 
-## this is a hack to align with other models here while downloading weights with the maskedlm config from HF
-## the decoder.bias is ignored in the model
-class Model(nn.Module): 
+### below are the classes for specific pipelines
+
+class Model(nn.Module):
+    """
+    Computes embeddings for input sequences using a ModernBERT model.
+
+    Note : sanitization is a hack to align with other models here while downloading weights 
+    with the maskedlm config from HF (original modelBert model).
+    The decoder.bias is ignored here
+    """ 
     def __init__(self, config: ModelArgs):
         super().__init__()
         self.config = config
@@ -452,9 +431,8 @@ class Model(nn.Module):
 
     def __call__(
         self, 
-        input_ids, 
+        input_ids : mx.array, 
         attention_mask: Optional[mx.array] = None,
-        labels: Optional[mx.array] = None,  # Expected to be a similarity matrix
         position_ids: Optional[mx.array] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = True,
@@ -462,7 +440,7 @@ class Model(nn.Module):
         
         if attention_mask is None:
             batch_size, seq_len = input_ids.shape 
-            attention_mask = mx.ones((batch_size, seq_len)) ### not sure why transformers decided to do this but it is updated via _update_attention_mask() in the model
+            attention_mask = mx.ones((batch_size, seq_len)) ### updated via _update_attention_mask() in the model
 
         # Get embeddings and encoder outputs as before
         encoder_outputs = self.model(
@@ -481,23 +459,14 @@ class Model(nn.Module):
             attention_mask = mx.expand_dims(attention_mask, -1)
             pooled = mx.sum(hidden_state * attention_mask, axis=1) / mx.sum(attention_mask, axis=1)
             
+        ### TODO : remove after tests
         # normalization
-        pooled = pooled / mx.sqrt(mx.sum(pooled * pooled, axis=-1, keepdims=True) + 1e-12)
-
-        loss = None
-        if labels is not None:
-            raise NotImplementedError('training loop for feature extraction not finalized')
-            ### TODO 
-            # # Compute cosine similarity between all pairs
-            # similarity = mx.matmul(pooled, pooled.T)
-            # # Compute MSE loss between computed similarities and target similarities
-            # loss = nn.losses.mse_loss(similarity, labels)
+        #pooled = pooled / mx.sqrt(mx.sum(pooled * pooled, axis=-1, keepdims=True) + 1e-12)
 
         if not return_dict:
-            return (loss,pooled, hidden_state) 
+            return (pooled, hidden_state) 
 
         return {
-            "loss": loss,
             "embeddings": pooled,
             "last_hidden_states": hidden_state,
         }
@@ -516,11 +485,73 @@ class Model(nn.Module):
                 sanitized_weights[k] = v
         return sanitized_weights
 
-### below are the classes for specific usecases
-class ModelForSentenceTransformers(Model):
+
+class ModelForSentenceSimilarity(Model):
+    """
+    Computes similarity scores between input sequences and reference sentences.
+    """
+    def __init__(self, config):
+        super().__init__(config)
+    
+    def __call__(
+        self,
+        input_ids,
+        reference_input_ids,  # Shape: [num_references, seq_len]
+        attention_mask: Optional[mx.array] = None,
+        reference_attention_mask: Optional[mx.array] = None,
+        position_ids: Optional[mx.array] = None,
+        similarity_scores: Optional[mx.array] = None,  # Shape: [batch_size, num_references]
+        return_dict: Optional[bool] = True,
+    ):
+        # Get embeddings for input batch
+        batch_outputs = super().__call__(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids, ### ?
+            return_dict=True
+        )
+        batch_embeddings = batch_outputs["embeddings"]  # [batch_size, hidden_size]
+        
+        # Get embeddings for reference sentences
+        ref_outputs = super().__call__(
+            input_ids=reference_input_ids,
+            attention_mask=reference_attention_mask,
+            position_ids=position_ids, ### ?
+            return_dict=True
+        )
+        reference_embeddings = ref_outputs["embeddings"]  # [num_references, hidden_size]
+        
+        # Compute similarities between batch and references
+        similarities = compute_similarity(
+            batch_embeddings,  # [batch_size, hidden_size]
+            reference_embeddings  # [num_references, hidden_size]
+        )  # Result: [batch_size, num_references]
+        
+        loss = None
+        if similarity_scores is not None:
+            # MSE loss between computed similarities and target scores
+            # similarity_scores should be shape [batch_size, num_references]
+            loss = nn.losses.mse_loss(similarities, similarity_scores)
+            
+        if not return_dict:
+            return (loss, similarities, batch_embeddings)
+            
+        return {
+            "loss": loss,
+            "similarities": similarities,  # [batch_size, num_references]
+            "embeddings": batch_embeddings,  # [batch_size, hidden_size]
+        }
+
+class ModelForSentenceTransformers(ModelForSentenceSimilarity):
+    """
+    Extends ModelForSentenceSimilarity to provide embeddings for input sequences.
+    This class sanitizes typical sentence transformers weights to align with the ModernBERT model.
+    """
+    def __init__(self, config: ModelArgs):
+        super().__init__(config)
+
     def sanitize(self, weights):
-        """Convert sentence transformer weights to ModernBERT format.
-        Then use the call method of the parent class to get the embeddings."""
+        """Convert sentence transformer weights to ModernBERT format."""
         sanitized_weights = {}
         
         for k, v in weights.items():
@@ -532,6 +563,103 @@ class ModelForSentenceTransformers(Model):
                 new_key = "model." + k
                 sanitized_weights[new_key] = v
         return sanitized_weights
+    
+class ModelForZeroShotClassification(Model):
+    """
+    Computes zero-shot classification probabilities for input sequences given labels.
+    Other interprations of zero-shot classification, this one is closer to sentence similarity.
+    Tokenized Labels or definitions must be provided in __call__.
+    No hypothesis_templating in this implementation.
+    """
+    def __init__(self, config):
+        super().__init__(config)
+        
+        # Store encoded label descriptions - can be used for caching to classify large datasets
+        self.label_embeddings = None
+    
+    def encode_labels(self, label_candidates, label_candidates_attention_mask):
+        """Encodes label descriptions into embeddings."""
+        
+        ### TODO : build option to reuse cached label embeddings
+        # if self.label_embeddings is not None :
+        #     return
+            
+        # Get embeddings for each label description
+        label_outputs = super().__call__(
+            input_ids=label_candidates,
+            attention_mask=label_candidates_attention_mask,
+            return_dict=True
+        )
+        self.label_embeddings = label_outputs["embeddings"]  # [num_labels, hidden_size]
+    
+    def __call__(
+        self,
+        input_ids,
+        attention_mask: Optional[mx.array] = None,
+        label_candidates: Optional[mx.array] = None,
+        label_candidates_attention_mask: Optional[mx.array] = None,
+        multi_label: Optional[bool] = False,
+        position_ids: Optional[mx.array] = None,
+        labels: Optional[mx.array] = None,
+        return_dict: Optional[bool] = True,
+    ):
+        if label_candidates is None:
+            raise ValueError("label_candidates must be provided for zero-shot classification.")
+
+        # Ensure we have label embeddings
+        self.encode_labels(label_candidates, label_candidates_attention_mask)
+        
+        # Get embeddings for input batch
+        input_outputs = super().__call__(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            return_dict=True
+        )
+        batch_embeddings = input_outputs["embeddings"]  # [batch_size, hidden_size]
+        
+        # Compute similarities between batch and all labels
+        # Results in [batch_size, num_labels]
+        similarities = compute_similarity(batch_embeddings, self.label_embeddings)
+        
+        # Convert to probabilities across labels
+        probs = mx.softmax(similarities, axis=-1)
+
+        loss = None
+        if labels is not None:
+            ### similarities range may not be wide enough for cross-entropy
+            ### add a scaling factor?
+            if len(labels.shape) == 1:
+                loss = nn.losses.cross_entropy(similarities, labels)
+            else:
+                # Convert one-hot to indices
+                label_indices = mx.argmax(labels, axis=-1)
+                loss = nn.losses.cross_entropy(similarities, label_indices)
+            
+        if not return_dict:
+            return (loss, similarities if multi_label else probs, batch_embeddings)
+            
+        return {
+            "loss": loss,
+            "output": similarities if multi_label else probs,  # [batch_size, num_labels]
+            "embeddings": batch_embeddings,  # [batch_size, hidden_size]
+        }
+
+    ### using same as sentence transformers for now
+    def sanitize(self, weights):
+        """Convert sentence transformer weights to ModernBERT format."""
+        sanitized_weights = {}
+        
+        for k, v in weights.items():
+            if "position_ids" in k:
+                ### used this from another model, may need to change
+                # Remove unused position_ids
+                continue
+            else:
+                new_key = "model." + k
+                sanitized_weights[new_key] = v
+        return sanitized_weights
+
 
 class ModernBertPredictionHead(nn.Module):
     def __init__(self, config : ModelArgs):
@@ -545,8 +673,12 @@ class ModernBertPredictionHead(nn.Module):
         hidden_states = self.act(hidden_states)
         hidden_states = self.norm(hidden_states)
         return hidden_states
-    
+
+
 class ModelForMaskedLM(nn.Module):
+    """
+    Computes masked language modeling (MLM) loss for input sequences.
+    """
     def __init__(self, config : ModelArgs):
         super().__init__()
         self.config = config
@@ -587,7 +719,7 @@ class ModelForMaskedLM(nn.Module):
         
         if attention_mask is None:
             batch_size, seq_len = input_ids.shape 
-            attention_mask = mx.ones((batch_size, seq_len)) ### not sure why transformers decided to do this but it is updated via _update_attention_mask() in the model
+            attention_mask = mx.ones((batch_size, seq_len)) ###  updated via _update_attention_mask() in the model
 
         outputs = self.model(
             input_ids=input_ids,
@@ -653,7 +785,14 @@ class ModelForMaskedLM(nn.Module):
                 sanitized_weights[k] = v
         return sanitized_weights
     
+
 class ModelForSequenceClassification(nn.Module):
+    """
+    Computes sequence classification probabilities for input sequences.
+    Sanitization alignes typical BERT weights with the ModernBERT model.
+
+    NOTE : regressions and binary classification not tested.
+    """
     def __init__(self, config: ModelArgs):
         super().__init__()
         self.config = config
@@ -664,7 +803,11 @@ class ModelForSequenceClassification(nn.Module):
         self.model = ModernBertModel(config)
         self.head = ModernBertPredictionHead(config)
         self.drop = nn.Dropout(p=config.classifier_dropout)
-        self.classifier = nn.Linear(config.hidden_size, config.num_labels, bias=True) ### bias=config.classifier_bias removed because mismatch with HF checkpoint
+        self.classifier = nn.Linear(
+            config.hidden_size, 
+            config.num_labels, 
+            bias=True ### bias=config.classifier_bias removed because mismatch with HF checkpoint
+        ) 
     
     def _process_outputs(self, logits: mx.array) -> mx.array:
         """Apply the appropriate activation function to the logits."""
@@ -697,7 +840,7 @@ class ModelForSequenceClassification(nn.Module):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = True,
     ) -> Dict:
-        ### TODO : zero-shot classification
+        
         if attention_mask is None:
             batch_size, seq_len = input_ids.shape
             attention_mask = mx.ones((batch_size, seq_len))
@@ -736,7 +879,7 @@ class ModelForSequenceClassification(nn.Module):
 
         return {
             "loss": loss,
-            "probs": processed_logits,
+            "probabilities": processed_logits,
             "hidden_states": outputs.get("hidden_states", None),
         }
     
@@ -746,8 +889,6 @@ class ModelForSequenceClassification(nn.Module):
             if "position_ids" in k:
                 # Remove unused position_ids
                 continue
-            # if k in ["head.dense.bias"]:  # Add any other weights that should be skipped
-            #     continue
             elif k.startswith("bert"):
                 # Handle legacy BERT naming if needed
                 new_k = k.replace("bert.", "model.")
@@ -757,6 +898,11 @@ class ModelForSequenceClassification(nn.Module):
         return sanitized_weights
     
 class ModelForTokenClassification(nn.Module):
+    """
+    Computes token classification probabilities for input sequences.
+
+    NOTE: untested for now
+    """
     def __init__(self, config: ModelArgs):
         super().__init__()
         self.config = config       
@@ -765,7 +911,11 @@ class ModelForTokenClassification(nn.Module):
         self.model = ModernBertModel(config)
         self.head = ModernBertPredictionHead(config)
         self.drop = nn.Dropout(p=config.classifier_dropout)
-        self.classifier = nn.Linear(config.hidden_size, config.num_labels, bias=config.classifier_bias) 
+        self.classifier = nn.Linear(
+            config.hidden_size, 
+            config.num_labels, 
+            bias=config.classifier_bias
+        ) 
 
     def __call__(
         self,
@@ -795,6 +945,9 @@ class ModelForTokenClassification(nn.Module):
         sequence_output = self.drop(sequence_output)
         logits = self.classifier(sequence_output)
 
+        # Process logits for inference
+        processed_logits = mx.softmax(logits, axis=-1)
+
         loss = None
         if labels is not None:
             # Compute token classification loss
@@ -804,11 +957,11 @@ class ModelForTokenClassification(nn.Module):
             )
 
         if not return_dict:
-            return [loss, logits, outputs[1:]]
+            return [loss,  processed_logits, outputs[1:]]
 
         return {
             "loss": loss,
-            "logits": logits,
+            "probabilities": processed_logits,
             "hidden_states": outputs.get("hidden_states", None),
         }
     
@@ -818,8 +971,6 @@ class ModelForTokenClassification(nn.Module):
             if "position_ids" in k:
                 # Remove unused position_ids
                 continue
-            # if k in ["head.dense.bias"]:  # Add any other weights that should be skipped
-            #     continue
             else:
                 sanitized_weights[k] = v
         return sanitized_weights
