@@ -791,14 +791,13 @@ class ModelForSequenceClassification(nn.Module):
     Computes sequence classification probabilities for input sequences.
     Sanitization alignes typical BERT weights with the ModernBERT model.
 
-    NOTE : regressions and binary classification not tested.
+    NOTE : binary classification not tested.
     """
     def __init__(self, config: ModelArgs):
         super().__init__()
         self.config = config
         self.num_labels = config.num_labels
         self.is_regression = config.is_regression
-        self.label_candidates = config.label_candidates
         
         self.model = ModernBertModel(config)
         self.head = ModernBertPredictionHead(config)
