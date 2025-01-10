@@ -511,27 +511,33 @@ class ModelForSentenceSimilarity(Model):
             return_dict=True
         )
         batch_embeddings = batch_outputs["embeddings"]  # [batch_size, hidden_size]
+
+        if reference_input_ids is not None:
         
-        # Get embeddings for reference sentences
-        ref_outputs = super().__call__(
-            input_ids=reference_input_ids,
-            attention_mask=reference_attention_mask,
-            position_ids=position_ids, ### ?
-            return_dict=True
-        )
-        reference_embeddings = ref_outputs["embeddings"]  # [num_references, hidden_size]
+            # Get embeddings for reference sentences
+            ref_outputs = super().__call__(
+                input_ids=reference_input_ids,
+                attention_mask=reference_attention_mask,
+                position_ids=position_ids, ### ?
+                return_dict=True
+            )
+            reference_embeddings = ref_outputs["embeddings"]  # [num_references, hidden_size]
+            
+            # Compute similarities between batch and references
+            similarities = compute_similarity(
+                batch_embeddings,  # [batch_size, hidden_size]
+                reference_embeddings  # [num_references, hidden_size]
+            )  # Result: [batch_size, num_references]
+            
+            loss = None
+            if similarity_scores is not None:
+                # MSE loss between computed similarities and target scores
+                # similarity_scores should be shape [batch_size, num_references]
+                loss = nn.losses.mse_loss(similarities, similarity_scores)
         
-        # Compute similarities between batch and references
-        similarities = compute_similarity(
-            batch_embeddings,  # [batch_size, hidden_size]
-            reference_embeddings  # [num_references, hidden_size]
-        )  # Result: [batch_size, num_references]
-        
-        loss = None
-        if similarity_scores is not None:
-            # MSE loss between computed similarities and target scores
-            # similarity_scores should be shape [batch_size, num_references]
-            loss = nn.losses.mse_loss(similarities, similarity_scores)
+        else:
+            similarities = None
+            loss = None
             
         if not return_dict:
             return (loss, similarities, batch_embeddings)

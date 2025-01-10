@@ -29,7 +29,7 @@ See examples/raw_embeddings.py
 Uses the ModelForSentenceSimilarity class, which extends Model, and returns the similarity matrix, using cosine similarity, between input sequences and reference sequences 
   
 - "sentence-transformers"  
-Uses the ModelForSentenceTransformers class, which extends ModelForSentenceSimilarity. The only difference is weight sanitation as sentence transformers parameters keys are specific.  
+Uses the ModelForSentenceTransformers class, which extends ModelForSentenceSimilarity. The only difference is weight sanitization as sentence transformers parameters keys are specific.  
 See examples/sentencetransformers.py  
   
 - "zero-shot-classification" (WIP)  
@@ -37,7 +37,7 @@ Uses the ModelForZeroShotClassification class, which extends Model, and returns 
 See examples/zeroshot.py 
   
 - "masked-lm"  
-Uses the ModelForMaskedLM. Returns logits for all tokens in the input sequence. For now, filtering fo rthe masked token and softmax are handled outside the pipeline (see tests_maskedlm.py). It probably makes sense to integrate this in the pipeline.  
+Uses the ModelForMaskedLM. Returns logits for all tokens in the input sequence. For now, filtering for the masked token and softmax are handled outside the pipeline (see tests_maskedlm.py). It probably makes sense to integrate this in the pipeline.  
 See examples/maskedlm.py  
   
 - "text-classification"  
