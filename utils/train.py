@@ -7,7 +7,7 @@ from tuner.trainer import Trainer, TrainingArgs
 def main():
 
     model_path = "answerdotai/ModernBERT-base"
-    dataset_id = "argilla/synthetic-domain-text-classification"
+    dataset_id = "argilla/synthetic-domain-text-classification" # can be a local path
     task_type = "text-classification"
     is_regression = False # if true, it will be a regression task
     train = True # if false, it will only evaluate the model
@@ -19,20 +19,18 @@ def main():
     output_dir = model_path.split("/")[-1] + "_" + task_type
 
     # Load datasets
-    train_dataset, valid_dataset, test_dataset = load_dataset(dataset_id, task_type)
+    dataset_args = {
+        "task_type": task_type,
+        "data": dataset_id
+    }
+    train_dataset, valid_dataset, test_dataset = load_dataset(dataset_args)
 
-    ### TODO: make sure that labels are ids not text. if not, convert them to using label2id
-    ## update id2label and label2id in the model.config, update num_labels accordingly
-    label2id, id2label = dict(), dict()
-    for i, label in enumerate(labels):
-        label2id[label] = str(i)
-        id2label[str(i)] = label
-
+    model_config={}
     if task_type == "text-classification" and is_regression:
         model_config={"is_regression":True}
-    else:
-        model_config={}
-    
+    if train_dataset.get("id2label", None):
+        model_config["id2label"] = train_dataset["id2label"]
+        
     # Load model and tokenizer
     model, tokenizer = load(
         model_path, 

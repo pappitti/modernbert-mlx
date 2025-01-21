@@ -231,6 +231,7 @@ dependencies = [
     { name = "datasets" },
     { name = "huggingface-hub" },
     { name = "mlx" },
+    { name = "pyyaml" },
     { name = "transformers" },
 ]
 
@@ -239,6 +240,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=3.2.0" },
     { name = "huggingface-hub", specifier = ">=0.27.0" },
     { name = "mlx", specifier = ">=0.21.1" },
+    { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "transformers", specifier = ">=4.47.1" },
 ]
 
