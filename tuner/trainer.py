@@ -337,10 +337,13 @@ class Trainer:
         """Save a model checkpoint."""
         save_path = self.output_dir / f"checkpoint-{self.global_step}"
         save_path.mkdir(exist_ok=True)
+
+        # Save model config
+        self.model.save(save_path / "config.json")
         
         # Save model weights
         ### sharding not necessary for small models
-        weights = dict(tree_flatten(self.model.trainable_parameters())) ### need more than just the model. potentially also the classifier
+        weights = dict(tree_flatten(self.model.trainable_parameters())) ### need more than just the model. (everthing included?)
         mx.save_safetensors(str(save_path / "model.safetensors"), weights, metadata={"format": "mlx"})
         
         # Save metrics

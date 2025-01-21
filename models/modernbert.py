@@ -5,7 +5,7 @@ from typing import Optional, Dict, Literal, Any
 import mlx.core as mx
 import mlx.nn as nn
 
-from .base import BaseModelArgs, compute_similarity, apply_rotary_pos_emb 
+from .base import BaseModelArgs, compute_similarity
 
 ### NOTE : removed all the attention_outputs (eager mode), may add it back later
 ### given no flash attention 2, padded/unpadded was also removed
@@ -85,44 +85,6 @@ class ModelArgs(BaseModelArgs):
         return len(self.id2label)
 
 
-class ModernBertRotaryEmbedding(nn.Module):
-    def __init__(self, dim: int, max_position_embeddings: int =2048, base: float = 10000):
-        super().__init__()
-        self.dim = dim
-        self.max_position_embeddings = max_position_embeddings
-        self.base = base
-    
-    ### property decorator to make a method behave like an attribute and avoid a flag for missing parameters
-    ### the flip side is that the value is recalculated at every forward pass 
-    ### TBC for training
-    @property
-    def inv_freq(self):
-        return 1.0 / (self.base ** (mx.arange(0, self.dim, 2, dtype=mx.int32) / self.dim)) # [ dim/2 ]
-
-    def __call__(self, x, position_ids, seq_len=None):
-        # x: [bs, num_attention_heads, seq_len, head_size]
-        inv_freq_expanded = mx.expand_dims(self.inv_freq, [0, 2]) # [1, dim/2, 1]
-        inv_freq_expanded = mx.broadcast_to(
-            inv_freq_expanded,
-            [position_ids.shape[0], inv_freq_expanded.shape[1], 1]
-        ) # [bs, dim/2, 1]
-
-        position_ids_expanded = mx.expand_dims(position_ids.astype(mx.float32), 1) # [bs, 1, seq_len]
-    
-        # Computing position embeddings
-        freqs = mx.matmul(inv_freq_expanded, position_ids_expanded) # [bs, dim/2, seq_len]
-        freqs = mx.transpose(freqs, [0, 2, 1]) # [bs, seq_len, dim/2]
-        
-        # Duplicating frequencies
-        emb = mx.concatenate([freqs, freqs], axis=-1) # [bs, seq_len, dim]
-        
-        # Computing sin and cos
-        cos = mx.cos(emb)
-        sin = mx.sin(emb)
-        
-        return cos.astype(x.dtype), sin.astype(x.dtype)
-
-
 class ModernBertEmbeddings(nn.Module):
     """
     Same as BertEmbeddings with a tiny tweak for positional embeddings indexing.
@@ -189,15 +151,10 @@ class ModernBertAttention(nn.Module):
             self.local_attention = (-1, -1)
 
         rope_theta = config.global_rope_theta
-        max_position_embeddings = config.max_position_embeddings
-        if self.local_attention != (-1, -1):
-            if config.local_rope_theta is not None:
-                rope_theta = config.local_rope_theta
-            max_position_embeddings = config.local_attention
+        if self.local_attention != (-1, -1) and config.local_rope_theta is not None:
+            rope_theta = config.local_rope_theta
 
-        self.rotary_emb = ModernBertRotaryEmbedding(
-            dim=self.head_dim, max_position_embeddings=max_position_embeddings, base=rope_theta
-        )
+        self.rotary_emb = nn.RoPE(dims=self.head_dim, base=rope_theta)
 
         self.Wo = nn.Linear(config.hidden_size, config.hidden_size, bias=config.attention_bias)
         self.out_drop = nn.Dropout(p=config.attention_dropout) if config.attention_dropout > 0.0 else nn.Identity()
@@ -217,15 +174,19 @@ class ModernBertAttention(nn.Module):
         qkv = mx.reshape(qkv, (bs, -1, 3, self.num_heads, self.head_dim))
 
         # Get attention outputs using SDPA
-        cos, sin = self.rotary_emb(qkv, position_ids=position_ids)
-        qkv = mx.transpose(qkv, [0, 3, 2, 1, 4])  # [batch_size, nheads, 3, seqlen, headdim]
-        query, key, value = mx.split(qkv, indices_or_sections=3, axis=2)
-        query = query.squeeze(2) 
-        key = key.squeeze(2)
-        value = value.squeeze(2)
+        qkv = mx.transpose(
+            qkv, [0, 3, 2, 1, 4]
+        )  # [batch_size, nheads, 3, seqlen, headdim]
+        query, key, value = mx.split(
+            qkv, indices_or_sections=3, axis=2
+        )  # each [batch_size, nheads, 1, seqlen, headdim]
+        query = query.squeeze(2)  # [batch_size, nheads, seqlen, headdim]
+        key = key.squeeze(2)  # [batch_size, nheads, seqlen, headdim]
+        value = value.squeeze(2)  # [batch_size, nheads, seqlen, headdim]
 
         # Applying rotary embeddings
-        query, key = apply_rotary_pos_emb(query, key, cos, sin)
+        query = self.rotary_emb(query)
+        key = self.rotary_emb(key)
         
         # Handling local attention if needed
         if self.local_attention != (-1, -1):
@@ -468,7 +429,7 @@ class Model(nn.Module):
 
         return {
             "embeddings": pooled,
-            "last_hidden_states": hidden_state,
+            "last_hidden_state": hidden_state,
         }
     
     def sanitize(self, weights):

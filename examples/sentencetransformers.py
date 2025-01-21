@@ -18,7 +18,7 @@ def main():
         "What is TSNE?",
         "Who is Laurens van der Maaten?",
         "I like grapes",
-        "Grandma's cat sheds his hair during winter."
+        "Grandma's cat got bored last winter."
     ]
 
     reference_texts = [

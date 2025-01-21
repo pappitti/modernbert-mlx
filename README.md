@@ -19,6 +19,7 @@ In order to use different model classes for different use-cases, a concept of pi
 from utils import load
 model, tokenizer = load("answerdotai/ModernBERT-base", pipeline='masked-lm')
 ```  
+If no pipeline is provided, the masked-lm abstraction will be used by default.  
   
 Pipeline list : 
 - "embeddings"  
@@ -33,7 +34,7 @@ Uses the ModelForSentenceTransformers class, which extends ModelForSentenceSimil
 See examples/sentencetransformers.py  
   
 - "zero-shot-classification" (WIP)  
-Uses the ModelForZeroShotClassification class, which extends Model, and returns probabilities of labels for the sequence. There are other interpretrations of what zero-shot classification means, notably classifications that require fixed labels. Not sure the approach is correct here. More work needed. Here, labels must be provided in the config file as a list or as a dictionary {label:description} as a label_candidates parameter in the config file. 
+Uses the ModelForZeroShotClassification class, which extends Model, and returns probabilities of labels for the sequence. There are other interpretrations of what zero-shot classification means, notably classifications that require fixed labels. Not sure which approach is correct. More work needed. Here, labels must be provided in the config file as a list or as a dictionary {label:description} as a label_candidates parameter in the config file. 
 See examples/zeroshot.py 
   
 - "masked-lm"  
@@ -66,4 +67,4 @@ Running example file : `uv run python -m examples.raw_embeddings`
 ## Inspiration
 - [transformers](https://github.com/huggingface/transformers/blob/main/src/transformers/models/modernbert/modular_modernbert.py), instrumental to this project
 - [MLX Examples](https://github.com/ml-explore/mlx-examples) by Apple, is the source of the utils for this project (see licence)
-- [mlx-embeddings](https://github.com/Blaizzy/mlx-embeddings) by Prince Canuma whose project, supporting BERT and xml-roberta, has been more than helpful to get started with this one 
+- [mlx-embeddings](https://github.com/Blaizzy/mlx-embeddings) by Prince Canuma whose project, supporting BERT and xml-roberta, has been more than helpful to get started with this one. I've worked on BERT and xml-roberta in a [fork of this project](https://github.com/pappitti/mlx-embeddings). Plan is to add the stella architecture there too.     
