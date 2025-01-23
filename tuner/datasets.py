@@ -84,11 +84,11 @@ class Dataset:
     def __len__(self):
         return len(self.data)
     
-    def shuffle(self):
-        indices = mx.random.permutation(len(self.data))
-        indices = indices.tolist() # Convert to list for indexing
-        shuffled_data = [self.data[i] for i in indices]
-        return Dataset(shuffled_data, self.task_type, self.labels)
+    # def shuffle(self):
+    #     indices = mx.random.permutation(len(self.data))
+    #     indices = indices.tolist() # Convert to list for indexing
+    #     shuffled_data = [self.data[i] for i in indices]
+    #     return Dataset(shuffled_data, self.task_type, self.labels)
 
 def load_jsonl(file_path: Path) -> List[Dict[str, Any]]:
     """Loads data from a JSONL file"""
@@ -118,7 +118,14 @@ def create_splits(data: List[Dict[str, Any]], train_ratio=0.7, val_ratio=0.15, t
     # Shuffle data
     data_copy = data.copy()
     mx.random.seed(42)  # For reproducibility
-    mx.random.shuffle(data_copy)
+    mx.random.shuffle(data_copy) ### won't work
+    ### TODO something like this
+    # indices = range(0, len(dataset), batch_size)
+    #     if shuffle:
+    #         indices = mx.random.permutation(len(data))
+            
+    #     for i in indices:
+    #         batch = data[i:i + batch_size]
     
     # Calculate split points
     n = len(data_copy)

@@ -1,6 +1,6 @@
 import time
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple, List
 from textwrap import dedent
@@ -20,13 +20,20 @@ def grad_checkpoint(model):
     Apply gradient checkpointing to the model's forward pass to reduce memory usage.
     Uses MLX's checkpoint mechanism to save memory during backpropagation.
     """
-    original_call = model.__call__
+    def checkpoint_fn(module):
+        original_call = module.__call__
 
-    def checkpointed_call(self, **kwargs):
-        # Let MLX handle the parameter management, just checkpoint the function call
-        return mx.checkpoint(original_call)(self, **kwargs)
+        def checkpointed_call(self, **kwargs):
+            # Let MLX handle the parameter management, just checkpoint the function call
+            return mx.checkpoint(original_call)(self, **kwargs)
 
-    model.__call__ = checkpointed_call
+        module.__call__ = checkpointed_call
+    
+    # Checkpoint transformer layers - these are the main memory users
+    for layer in model.model.layers:
+        checkpoint_fn(layer)
+
+    ### TODO : optionally checkpoint other layers  (head, classifier) 
 
 def create_mlm_masks(
     input_ids: mx.array,
@@ -118,59 +125,6 @@ class TrainingArgs:
         self.grad_checkpoint = grad_checkpoint ### mat not be necessary but helps anticipating hardware constraints
         self.push_to_hub = push_to_hub ### not used here but kept for later (see push_to_hub in utils)
 
-class WeightChangeTracker:
-    """Tracks changes in model weights over time."""
-    
-    def __init__(self, model):
-        self.model = model
-        self.initial_weights = None
-        self.weight_history = {}
-        self.save_initial_weights()
-    
-    def save_initial_weights(self):
-        """Saves a copy of initial model weights."""
-        self.initial_weights = {
-            name: param[:]
-            for name, param in tree_flatten(self.model.parameters())
-        }
-        
-        # Initialize history
-        for name in self.initial_weights:
-            self.weight_history[name] = []
-    
-    def track_changes(self, step):
-        """Records weight changes for this step."""
-        current_weights = dict(tree_flatten(self.model.parameters()))
-        
-        for name, initial_weight in self.initial_weights.items():
-            current_weight = current_weights[name]
-            
-            # Compute relative change
-            weight_diff = mx.abs(current_weight - initial_weight)
-            relative_change = mx.mean(weight_diff / (mx.abs(initial_weight) + 1e-7))
-            
-            self.weight_history[name].append({
-                'step': step,
-                'relative_change': relative_change.item(),
-                'max_change': mx.max(weight_diff).item(),
-                'mean_value': mx.mean(current_weight).item(),
-                'std_value': mx.std(current_weight).item()
-            })
-    
-    def report(self, last_n_steps=5):
-        """Generates a report of weight changes."""
-        print("\nWeight Change Report:")
-        print("-" * 50)
-        
-        for name, history in self.weight_history.items():
-            recent_changes = history[-last_n_steps:]
-            if recent_changes:
-                avg_change = sum(h['relative_change'] for h in recent_changes) / len(recent_changes)
-                print(f"\nLayer: {name}")
-                print(f"Average relative change (last {last_n_steps} steps): {avg_change:.2e}")
-                print(f"Current mean value: {recent_changes[-1]['mean_value']:.2e}")
-                print(f"Current std value: {recent_changes[-1]['std_value']:.2e}")
-
 class Trainer:
     """
     A trainer for ModernBERT that adapts to the model's training objective.
@@ -187,7 +141,7 @@ class Trainer:
         optimizer = None
     ):
         self.model = model
-        self.tokenizer = tokenizer._tokenizer ### tokenizer is a wrapper around the HF tokenizer
+        self.tokenizer = tokenizer._tokenizer ### tokenizer is a wrapper around the HF tokenizer (see utils/tokenizer_utils.py)
         self.task_type = task_type
         self.args = training_args
         self.train_dataset = train_dataset
@@ -204,6 +158,9 @@ class Trainer:
         self.epoch = 0
         self.output_dir = Path(training_args.output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Pre-compile the training step
+        self.loss_and_grad = nn.value_and_grad(self.model, self._compute_loss)
         
         # Enable gradient checkpointing if requested
         if training_args.grad_checkpoint:
@@ -214,7 +171,22 @@ class Trainer:
         print(f"Training {model.__class__.__name__}")
         self._save_config()
 
-    def prepare_batch(self, batch: List[Dict[str, Any]]) -> Dict[str, mx.array]:
+    def _compute_loss(self, batch_inputs): 
+        """Compute the loss for a single batch"""
+        outputs = self.model(**batch_inputs)
+        return outputs["loss"]
+    
+    def _create_batches(self, dataset, batch_size, shuffle=False):
+        """Create optimized batches with minimal Python overhead"""
+        indices = range(0, len(dataset), batch_size)
+        if shuffle:
+            indices = mx.random.permutation(len(dataset))
+            
+        for i in indices:
+            batch = dataset[i:i + batch_size]
+            yield self._prepare_batch(batch)
+
+    def _prepare_batch(self, batch: List[Dict[str, Any]]) -> Dict[str, mx.array]:
         """
         Prepare inputs based on model type. The model's forward pass will handle
         the specific training objective.
@@ -240,15 +212,13 @@ class Trainer:
         # Add task-specific labels
         ### TODO : do better than this (once all tasks are implemented)
         if self.task_type == "text-classification" :
-            labels = [example["label"] for example in batch]  # These are already IDs
             if self.model.is_regression:
-                model_inputs["labels"] = mx.array(labels, dtype=mx.float32)
+                model_inputs["labels"] = mx.array([example["label"] for example in batch], dtype=mx.float32)
             else:
-                model_inputs["labels"] = mx.array(labels)
+                model_inputs["labels"] = mx.array([example["label"] for example in batch])
 
         elif self.task_type == "token-classification":
-            labels = [example["label"] for example in batch]
-            model_inputs["labels"] = mx.array(labels)
+            model_inputs["labels"] = mx.array([example["label"] for example in batch])
 
         elif self.task_type == "sentence-transformers" or self.task_type == "sentence-similarity":
             similarity_scores = [example["similarity_score"] for example in batch]
@@ -289,84 +259,55 @@ class Trainer:
         print("Starting training...")
         trainable_params = sum(p[1].size for p in tree_flatten(self.model.trainable_parameters()))
         print(f"Trainable parameters: {trainable_params}")
-
-        # # Initialize weight tracker
-        # tracker = WeightChangeTracker(self.model)
         
         for epoch in range(self.args.num_train_epochs):
             self.epoch = epoch
             print(f"\nEpoch {epoch + 1}/{self.args.num_train_epochs}")
             self._train_epoch()
-
-            # # Track weight changes
-            # tracker.track_changes(step=self.global_step)
-            # tracker.report()
             
             if self.eval_dataset is not None:
                 metrics = self.evaluate()
                 self._save_checkpoint(metrics)
-    
-    def compute_loss(self, params, batch):
-            # Update model parameters temporarily for forward pass
-            self.model.update(params)
-            outputs = self.model(**batch)
-            return mx.mean(outputs["loss"])
 
     def _train_epoch(self):
         """Training logic for one epoch."""
         self.model.train()
-        accumulated_loss = 0
-        num_steps = 0
+        total_loss = 0
+        n_steps = 0
         start_time = time.time()
         
         # Create batches from dataset
-        train_dataloader = self._create_dataloader(self.train_dataset, shuffle=True)
+        for batch in self._create_batches(self.train_dataset, self.args.batch_size, shuffle=True):
+            # Combined forward and backward pass
+            (loss, _), grads = self.loss_and_grad(self.model, batch)
             
-        for step, batch in enumerate(train_dataloader):
-            # Prepare batch - model's forward pass handles the specific objective
-            inputs = self.prepare_batch(batch)
+            # Update with accumulated gradients
+            if (n_steps + 1) % self.args.gradient_accumulation_steps == 0:
+                grads = average_gradients(grads)
+                self.optimizer.update(self.model, grads)
+                mx.eval(self.model.parameters())  # Ensure updates are applied
             
-            # Create loss function closure for this batch
-            loss_fn = lambda p: self.compute_loss(p, inputs)
-            
-            # Compute loss and gradients
-            loss, gradients = mx.value_and_grad(loss_fn)(self.model.parameters())
-            
-            # Update on gradient accumulation steps
-            if (step + 1) % self.args.gradient_accumulation_steps == 0:
-                gradients = average_gradients(gradients)
-                self.optimizer.update(self.model, gradients)
-                self.global_step += 1
-            
-            # Logging
-            accumulated_loss += loss.item()
-            num_steps += 1
-            
-            if self.global_step % self.args.logging_steps == 0:
-                avg_loss = accumulated_loss / num_steps
+            # Logging with minimal overhead
+            if n_steps % self.args.logging_steps == 0:
                 elapsed = time.time() - start_time
-                print(f"Step {self.global_step}: "
-                      f"loss = {avg_loss:.4f}, "
-                      f"steps/sec = {num_steps/elapsed:.2f}")
-                accumulated_loss = 0
-                num_steps = 0
-                start_time = time.time()
+                print(f"Step {n_steps}: loss = {loss:.4f}, steps/sec = {n_steps/elapsed:.2f}")
+            
+            total_loss += loss.item()
+            n_steps += 1
+            
+        return total_loss / n_steps ### why
     
     def evaluate(self):
         """Evaluation loop."""
         self.model.eval()
-        all_losses = []
+        total_loss = 0
+        n_steps = 0
         
-        eval_dataloader = self._create_dataloader(self.eval_dataset, shuffle=False)
-        
-        for batch in eval_dataloader:
-            inputs = self.prepare_batch(batch)
-            loss = self.model(**inputs)["loss"]
-            batch_loss = mx.mean(loss)
-            all_losses.append(batch_loss.item())
-        
-        avg_loss = sum(all_losses) / len(all_losses)
-        metrics = {"eval_loss": avg_loss}
+        for batch in self._create_batches(self.eval_dataset, self.args.eval_batch_size):
+            loss = self._compute_loss(self.model.parameters(), batch)
+            total_loss += loss.item()
+            n_steps += 1
+        metrics = {"eval_loss": total_loss / n_steps}
         
         print(f"\nEvaluation metrics: {metrics}")
         return metrics
@@ -383,6 +324,8 @@ class Trainer:
         # Save the model's training state
         training = self.model.training
         self.model.eval()
+        total_loss = 0
+        n_steps = 0
         
         # Use provided test dataset or fall back to eval dataset
         dataset_to_test = test_dataset or self.eval_dataset
@@ -390,18 +333,11 @@ class Trainer:
             raise ValueError("No test dataset provided")
         
         # Perform evaluation
-        all_losses = []
-        test_dataloader = self._create_dataloader(dataset_to_test, shuffle=False)
-        
-        for batch in test_dataloader:
-            inputs = self.prepare_batch(batch)
-            loss = self.model(**inputs)["loss"]
-            batch_loss = mx.mean(loss)
-            all_losses.append(batch_loss.item())
-        
-        # Compute metrics
-        test_loss = sum(all_losses) / len(all_losses)
-        metrics = {"test_loss": test_loss}
+        for batch in self._create_batches(self.eval_dataset, self.args.eval_batch_size):
+            loss = self._compute_loss(self.model.parameters(), batch)
+            total_loss += loss.item()
+            n_steps += 1
+        metrics = {"eval_loss": total_loss / n_steps}
         
         # Save test results
         results_path = self.output_dir / "test_results.json"
@@ -414,14 +350,6 @@ class Trainer:
         self.model.train(training)
         
         return metrics
-    
-    def _create_dataloader(self, dataset: Dataset, shuffle: bool = False):
-        """Create a dataloader from a HuggingFace dataset."""
-        if shuffle:
-            dataset = dataset.shuffle()
-        
-        for i in range(0, len(dataset), self.args.batch_size):
-            yield dataset[i:i + self.args.batch_size]
     
     def _save_checkpoint(self, metrics: Dict[str, float]):
         """Save a model checkpoint."""

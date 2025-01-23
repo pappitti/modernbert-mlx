@@ -25,7 +25,7 @@ def main():
     max_position_embeddings = getattr(model.config,"max_position_embeddings",512)
 
     # Prepare the input text
-    text = "Leaves fell off the trees after the windstorm."
+    text = "The study of computer science that focuses on the creation of intelligent machines that work and react like humans."
 
     # Tokenize the input
     tokens = tokenizer.encode(
