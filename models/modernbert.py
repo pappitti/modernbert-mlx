@@ -34,7 +34,7 @@ class ModelArgs(BaseModelArgs):
     embedding_dropout : float =0.0
     mlp_bias: bool = False
     mlp_dropout : float = 0.0
-    initializer_range=0.02 # relevant for MLX?
+    initializer_range=0.02 
     initializer_cutoff_factor=2.0 # relevant for MLX?
     pad_token_id=50283
     eos_token_id=50282
@@ -854,6 +854,9 @@ class ModelForSequenceClassification(nn.Module):
         for k, v in weights.items():
             if "position_ids" in k:
                 # Remove unused position_ids
+                continue
+            if k in ["decoder.bias"]:
+                ### this is the hack
                 continue
             elif k.startswith("bert"):
                 # Handle legacy BERT naming if needed

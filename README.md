@@ -50,19 +50,22 @@ Uses the ModelForTokenClassification class. Returns probabilities of labels for 
 
 Running example file : `uv run python -m examples.raw_embeddings`
 
-## Work in Progress
+## Work in Progress on Models
 - Current implementation has yielded encouraging results for masked LM tasks using in [this HF checkpoint](https://huggingface.co/answerdotai/ModernBERT-base). Only at inference
 - Embeddings and sentence similarity (incl. sentence transformers variants) tested for various models listed in examples/sentencetransformers.py notably [nomic modernbert-embed-base](https://huggingface.co/nomic-ai/modernbert-embed-base). Only at inference
 - text-classification tested for multi-label classification and regression with supportive results for various models listed in examples/textclassification.py. Single-label classification not tested yet. Only at inference  
 - Zero-shot classification tested with [nomic modernbert-embed-base](https://huggingface.co/nomic-ai/modernbert-embed-base). Not working for the moment    
 - ModelForTokenClassification is only a placeholder at this stage.
 
+## Work in Progress on Utils
+The dataset handling leverages HuggingFace's [Datasets](https://huggingface.co/docs/datasets/index) but requires a lot more work to address all important usecases
+
 ## Next Steps
-- Continue work on training
+- Continue work on training (PoC for sequence classification, still very preliminary)
 - train classifiers and sentence embeddings model to check Model, ModelForSentenceTransformers, ModelForSequenceClassification and ModelForTokenClassification
 - clean the code and improve consistency across model classes for inference and training
 - write doc
-- add other models that are relevant for these tasks (deberta?)
+- add other models that are relevant for these tasks (stella, bert, xml-roberta...)
 
 ## Inspiration
 - [transformers](https://github.com/huggingface/transformers/blob/main/src/transformers/models/modernbert/modular_modernbert.py), instrumental to this project

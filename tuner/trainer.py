@@ -15,20 +15,18 @@ from mlx.utils import tree_flatten
 from .datasets import Dataset
 
 
-def grad_checkpoint(layer):
+def grad_checkpoint(model):
     """
-    Update all instances of type(layer) to use gradient checkpointing.
+    Apply gradient checkpointing to the model's forward pass to reduce memory usage.
+    Uses MLX's checkpoint mechanism to save memory during backpropagation.
     """
-    fn = type(layer).__call__
+    original_call = model.__call__
 
-    def checkpointed_fn(model, *args, **kwargs):
-        def inner_fn(params, *args, **kwargs):
-            model.update(params)
-            return fn(model, *args, **kwargs)
+    def checkpointed_call(self, **kwargs):
+        # Let MLX handle the parameter management, just checkpoint the function call
+        return mx.checkpoint(original_call)(self, **kwargs)
 
-        return mx.checkpoint(inner_fn)(model.trainable_parameters(), *args, **kwargs)
-
-    type(layer).__call__ = checkpointed_fn ### what is this
+    model.__call__ = checkpointed_call
 
 def create_mlm_masks(
     input_ids: mx.array,
@@ -85,21 +83,93 @@ def create_mlm_masks(
 
 @dataclass
 class TrainingArgs:
-    batch_size: int = field(default=32, metadata={"help": "Training batch size"})
-    eval_batch_size: int = field(default=16, metadata={"help": "Evaluation batch size"})
-    max_length: int = field(default=512, metadata={"help": "Maximum sequence length"})
-    num_train_epochs: int = field(default=3, metadata={"help": "Number of training epochs"})
-    learning_rate: float = field(default=5e-5, metadata={"help": "Initial learning rate"})
-    weight_decay: float = field(default=0.01, metadata={"help": "Weight decay coefficient"})
-    warmup_ratio: float = field(default=0.1, metadata={"help": "Warmup ratio for learning rate scheduler"}) ### not used here but kept for later (see scheduler in utils)
-    gradient_accumulation_steps: int = field(default=1, metadata={"help": "Number of steps to accumulate gradients"})
-    eval_steps: int = field(default=500, metadata={"help": "Steps between evaluations"})
-    save_steps: int = field(default=1000, metadata={"help": "Steps between model saves"})
-    logging_steps: int = field(default=100, metadata={"help": "Steps between logging"})
-    output_dir: str = field(default="outputs", metadata={"help": "Directory to save outputs"})
-    save_total_limit: Optional[int] = field(default=None, metadata={"help": "If set, limits total number of saved checkpoints"})
-    grad_checkpoint: bool = field(default=True, metadata={"help": "Use gradient checkpointing"}) ### mat not be necessary but helps anticipating hardware constraints
-    push_to_hub: bool = field(default=False, metadata={"help": "Push model checkpoints to the HF"}) ### not used here but kept for later (see push_to_hub in utils)
+
+    def __init__(
+        self,
+        batch_size: int = 32,
+        eval_batch_size: int = 16,
+        max_length: int = 512,
+        num_train_epochs: int = 3,
+        learning_rate: float = 5e-5,
+        weight_decay: float = 0.01,
+        warmup_ratio: float = 0.1,
+        gradient_accumulation_steps: int = 1,
+        eval_steps: int = 500,
+        save_steps: int = 1000,
+        logging_steps: int = 100,
+        output_dir: str = "outputs",
+        save_total_limit: Optional[int] = None,
+        grad_checkpoint: bool = True,
+        push_to_hub: bool = False,
+    ):
+        self.batch_size = batch_size
+        self.eval_batch_size = eval_batch_size
+        self.max_length = max_length
+        self.num_train_epochs = num_train_epochs
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.warmup_ratio = warmup_ratio ### not used here but kept for later (see scheduler in utils)
+        self.gradient_accumulation_steps = gradient_accumulation_steps
+        self.eval_steps = eval_steps
+        self.save_steps = save_steps
+        self.logging_steps = logging_steps
+        self.output_dir = output_dir
+        self.save_total_limit = save_total_limit
+        self.grad_checkpoint = grad_checkpoint ### mat not be necessary but helps anticipating hardware constraints
+        self.push_to_hub = push_to_hub ### not used here but kept for later (see push_to_hub in utils)
+
+class WeightChangeTracker:
+    """Tracks changes in model weights over time."""
+    
+    def __init__(self, model):
+        self.model = model
+        self.initial_weights = None
+        self.weight_history = {}
+        self.save_initial_weights()
+    
+    def save_initial_weights(self):
+        """Saves a copy of initial model weights."""
+        self.initial_weights = {
+            name: param[:]
+            for name, param in tree_flatten(self.model.parameters())
+        }
+        
+        # Initialize history
+        for name in self.initial_weights:
+            self.weight_history[name] = []
+    
+    def track_changes(self, step):
+        """Records weight changes for this step."""
+        current_weights = dict(tree_flatten(self.model.parameters()))
+        
+        for name, initial_weight in self.initial_weights.items():
+            current_weight = current_weights[name]
+            
+            # Compute relative change
+            weight_diff = mx.abs(current_weight - initial_weight)
+            relative_change = mx.mean(weight_diff / (mx.abs(initial_weight) + 1e-7))
+            
+            self.weight_history[name].append({
+                'step': step,
+                'relative_change': relative_change.item(),
+                'max_change': mx.max(weight_diff).item(),
+                'mean_value': mx.mean(current_weight).item(),
+                'std_value': mx.std(current_weight).item()
+            })
+    
+    def report(self, last_n_steps=5):
+        """Generates a report of weight changes."""
+        print("\nWeight Change Report:")
+        print("-" * 50)
+        
+        for name, history in self.weight_history.items():
+            recent_changes = history[-last_n_steps:]
+            if recent_changes:
+                avg_change = sum(h['relative_change'] for h in recent_changes) / len(recent_changes)
+                print(f"\nLayer: {name}")
+                print(f"Average relative change (last {last_n_steps} steps): {avg_change:.2e}")
+                print(f"Current mean value: {recent_changes[-1]['mean_value']:.2e}")
+                print(f"Current std value: {recent_changes[-1]['std_value']:.2e}")
 
 class Trainer:
     """
@@ -110,6 +180,7 @@ class Trainer:
         self,
         model: nn.Module,
         tokenizer,
+        task_type: str,
         training_args: TrainingArgs,
         train_dataset: Dataset,
         eval_dataset: Optional[Dataset] = None,
@@ -117,6 +188,7 @@ class Trainer:
     ):
         self.model = model
         self.tokenizer = tokenizer._tokenizer ### tokenizer is a wrapper around the HF tokenizer
+        self.task_type = task_type
         self.args = training_args
         self.train_dataset = train_dataset
         self.eval_dataset = eval_dataset
@@ -135,8 +207,7 @@ class Trainer:
         
         # Enable gradient checkpointing if requested
         if training_args.grad_checkpoint:
-            for layer in model.layers:
-                grad_checkpoint(layer)
+            grad_checkpoint(model)
         
         # Log model type and config
         self.push_to_hub = training_args.push_to_hub
@@ -163,23 +234,23 @@ class Trainer:
         model_inputs = {
             "input_ids": encoded["input_ids"],
             "attention_mask": encoded["attention_mask"],
-            "position_ids": encoded["input_ids"].shape[1][None, :]
+            "position_ids": mx.arange(encoded["input_ids"].shape[1])[None, :]
         }
         
         # Add task-specific labels
         ### TODO : do better than this (once all tasks are implemented)
-        if self.args.task_type == "text-classification" :
+        if self.task_type == "text-classification" :
             labels = [example["label"] for example in batch]  # These are already IDs
             if self.model.is_regression:
                 model_inputs["labels"] = mx.array(labels, dtype=mx.float32)
             else:
                 model_inputs["labels"] = mx.array(labels)
 
-        elif self.args.task_type == "token-classification":
+        elif self.task_type == "token-classification":
             labels = [example["label"] for example in batch]
             model_inputs["labels"] = mx.array(labels)
 
-        elif self.args.task_type == "sentence-transformers" or self.args.task_type == "sentence-similarity":
+        elif self.task_type == "sentence-transformers" or self.task_type == "sentence-similarity":
             similarity_scores = [example["similarity_score"] for example in batch]
             model_inputs["similarity_score"] = mx.array(similarity_scores, dtype=mx.float32)
             ### what's the format of the reference_texts?
@@ -195,11 +266,11 @@ class Trainer:
             model_inputs["reference_input_ids"] = reference_encoded["input_ids"]
             model_inputs["reference_attention_mask"] = reference_encoded["attention_mask"]
 
-        elif self.args.task_type == "zero-shot-classification":
+        elif self.task_type == "zero-shot-classification":
             labels = [example["label"] for example in batch]
             model_inputs["labels"] = mx.array(labels)
             
-        elif self.args.task_type == "masked-lm":
+        elif self.task_type == "masked-lm":
             # For MLM, we need to mask some tokens
             inputs, labels = create_mlm_masks(
                 model_inputs["input_ids"],
@@ -207,22 +278,40 @@ class Trainer:
             )
             model_inputs["input_ids"] = inputs
             model_inputs["labels"] = labels
+        else:
+            raise ValueError(f"Unsupported task type: {self.task_type}")
             
+        # print (f"batch inputs : inputs {model_inputs["input_ids"].shape}, attention_mask {model_inputs["attention_mask"].shape}, labels {model_inputs["labels"].shape}")
         return model_inputs
 
     def train(self):
         """Main training loop."""
         print("Starting training...")
+        trainable_params = sum(p[1].size for p in tree_flatten(self.model.trainable_parameters()))
+        print(f"Trainable parameters: {trainable_params}")
+
+        # # Initialize weight tracker
+        # tracker = WeightChangeTracker(self.model)
         
         for epoch in range(self.args.num_train_epochs):
             self.epoch = epoch
             print(f"\nEpoch {epoch + 1}/{self.args.num_train_epochs}")
             self._train_epoch()
+
+            # # Track weight changes
+            # tracker.track_changes(step=self.global_step)
+            # tracker.report()
             
             if self.eval_dataset is not None:
                 metrics = self.evaluate()
                 self._save_checkpoint(metrics)
     
+    def compute_loss(self, params, batch):
+            # Update model parameters temporarily for forward pass
+            self.model.update(params)
+            outputs = self.model(**batch)
+            return mx.mean(outputs["loss"])
+
     def _train_epoch(self):
         """Training logic for one epoch."""
         self.model.train()
@@ -232,17 +321,16 @@ class Trainer:
         
         # Create batches from dataset
         train_dataloader = self._create_dataloader(self.train_dataset, shuffle=True)
-        
+            
         for step, batch in enumerate(train_dataloader):
             # Prepare batch - model's forward pass handles the specific objective
             inputs = self.prepare_batch(batch)
             
-            # Forward pass - model returns dict with 'loss' key
-            loss = self.model(**inputs)["loss"]
-            loss = loss / self.args.gradient_accumulation_steps
+            # Create loss function closure for this batch
+            loss_fn = lambda p: self.compute_loss(p, inputs)
             
-            # Backward pass
-            gradients = mx.grad(self.model)(inputs)
+            # Compute loss and gradients
+            loss, gradients = mx.value_and_grad(loss_fn)(self.model.parameters())
             
             # Update on gradient accumulation steps
             if (step + 1) % self.args.gradient_accumulation_steps == 0:
@@ -274,7 +362,8 @@ class Trainer:
         for batch in eval_dataloader:
             inputs = self.prepare_batch(batch)
             loss = self.model(**inputs)["loss"]
-            all_losses.append(loss.item())
+            batch_loss = mx.mean(loss)
+            all_losses.append(batch_loss.item())
         
         avg_loss = sum(all_losses) / len(all_losses)
         metrics = {"eval_loss": avg_loss}
@@ -307,7 +396,8 @@ class Trainer:
         for batch in test_dataloader:
             inputs = self.prepare_batch(batch)
             loss = self.model(**inputs)["loss"]
-            all_losses.append(loss.item())
+            batch_loss = mx.mean(loss)
+            all_losses.append(batch_loss.item())
         
         # Compute metrics
         test_loss = sum(all_losses) / len(all_losses)
@@ -338,8 +428,12 @@ class Trainer:
         save_path = self.output_dir / f"checkpoint-{self.global_step}"
         save_path.mkdir(exist_ok=True)
 
-        # Save model config
-        self.model.save(save_path / "config.json")
+        # Save model config - using the actual model's configuration
+        with open(save_path / "config.json", "w") as f:
+            json.dump(self.model.config.__dict__, f, indent=2)
+
+        # Save tokenizer json
+        self.tokenizer.save_pretrained(save_path)
         
         # Save model weights
         ### sharding not necessary for small models

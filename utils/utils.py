@@ -91,6 +91,21 @@ def _get_classes(config: dict, pipeline: Optional[str] = 'masked-lm'):
     ### should not reach here
     return arch.Model, arch.ModelArgs
 
+def _initialize_missing_classifier_weights(weights, model_args):
+    """Initialize weights only if they don't exist in the weights dictionary."""
+    # For sequence classification, check and initialize classifier weights if needed
+    if getattr(model_args,"num_labels") is not None:
+        if "classifier.weight" not in weights:
+            initializer_range = getattr(model_args,"initializer_range", 0.02)
+            weights["classifier.weight"] = mx.random.normal(
+                (model_args.num_labels, model_args.hidden_size),
+                scale=initializer_range
+            )
+            print(f"[INFO] Initialized classifier.weight with shape {weights['classifier.weight'].shape}")
+            
+        if "classifier.bias" not in weights:
+            weights["classifier.bias"] = mx.zeros((model_args.num_labels,))
+
 def compute_bits_per_weight(model):
     model_bytes = tree_reduce(
         lambda acc, x: acc + x.nbytes if isinstance(x, mx.array) else acc, model, 0
@@ -201,6 +216,11 @@ def load_model(
 
     model_args = model_args_class.from_dict(config)
     model = model_class(model_args)
+
+    # Initialize any missing weights to train a base model based on the pipeline
+    if pipeline == "text-classification":
+        _initialize_missing_classifier_weights(weights, model_args)
+    ### TODO add more pipelines
 
     if hasattr(model, "sanitize"):
         weights = model.sanitize(weights)

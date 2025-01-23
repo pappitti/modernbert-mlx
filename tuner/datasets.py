@@ -5,6 +5,16 @@ from typing import Dict, List, Optional, Tuple, Any
 from datasets import load_dataset as hf_load_dataset, Features, DatasetDict
 import mlx.core as mx
 
+class DatasetArgs:
+    """Arguments for dataset loading"""
+
+    def __init__(self, data: str, task_type: str, train : bool, text_field: Optional[str] = "text", label_field: Optional[str] = "label"):
+        self.data = data
+        self.task_type = task_type
+        self.train = train
+        self.text_field = text_field
+        self.label_field = label_field
+
 class Dataset:
     """Dataset class for ModernBERT that handles various tasks and data sources"""
     
@@ -16,7 +26,7 @@ class Dataset:
         self.id2label = None
 
         #load label mapping from the label_names if provided
-        if self.labels.length > 0 and task_type == "text-classification":
+        if len(self.labels) > 0 and task_type == "text-classification":
             try : 
                 self._load_label_mapping()
             except:
@@ -27,7 +37,7 @@ class Dataset:
         self._validate_data()
 
         # if no labels were privded intiallu but labels were added via validation, create the mapping
-        if self.labels.length > 0 and not self.label2id:
+        if len(self.labels) > 0 and not self.label2id:
             self._load_label_mapping()
         
     def _load_label_mapping(self):
@@ -75,9 +85,10 @@ class Dataset:
         return len(self.data)
     
     def shuffle(self):
-        shuffled_data = self.data.copy()
-        mx.random.shuffle(shuffled_data)
-        return Dataset(shuffled_data, self.task_type, self.config_path)
+        indices = mx.random.permutation(len(self.data))
+        indices = indices.tolist() # Convert to list for indexing
+        shuffled_data = [self.data[i] for i in indices]
+        return Dataset(shuffled_data, self.task_type, self.labels)
 
 def load_jsonl(file_path: Path) -> List[Dict[str, Any]]:
     """Loads data from a JSONL file"""
@@ -228,28 +239,33 @@ def load_local_dataset(data_path: Path, task_type: str) -> Tuple[Optional[Datase
         datasets["test"]
     )
 
-def process_hf_dataset(dataset, task_type: str, text_field: str = "text", label_field: str = "label") -> List[Dict[str, Any]]:
+def process_hf_dataset(
+        dataset, 
+        task_type: str, 
+        text_field: str = "text", 
+        label_field: str = "label"
+) -> List[Dict[str, Any]]:
     """Converts HuggingFace dataset to ModernBERT format"""
     processed_data = []
     
     for item in dataset:
         if task_type == "masked-lm":
-            processed_data.append({"text": item[text_field]})
+            processed_data.append({"text": item.get(text_field)})
         elif task_type == "text-classification":
             processed_data.append({
-                "text": item[text_field],
-                "label": item[label_field]
+                "text": item.get(text_field),
+                "label": item.get(label_field)
             })
         elif task_type == "token-classification":
             processed_data.append({
-                "text": item[text_field],
-                "labels": item[label_field]
+                "text": item.get(text_field),
+                "labels": item.get(label_field)
             })
         elif task_type == "sentence-transformers":
             # Assuming the dataset has sentence pairs and scores
             processed_data.append({
-                "text": [item["sentence1"], item["sentence2"]],
-                "similarity_score": item["score"]
+                "text": [item.get("sentence1"), item.get("sentence2")],
+                "similarity_score": item.get("score")
             })
     
     return processed_data
@@ -280,8 +296,9 @@ def load_hf_dataset(
     
     # Extract label information
     features = dataset["train"].features
-    label_names = features[label_field].names if label_field in features else []
-    
+    feature_label = features.get(label_field, {})
+    label_names = feature_label.names if feature_label.names else [] 
+
     # Check which splits exist
     has_validation = "validation" in dataset
     has_test = "test" in dataset

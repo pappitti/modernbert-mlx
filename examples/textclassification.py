@@ -18,7 +18,7 @@ def main():
     
     # Load the model and tokenizer
     model, tokenizer = load(
-        "clapAI/modernBERT-base-multilingual-sentiment",
+        "ModernBERT-base_text-classification/checkpoint-66",
         model_config={"is_regression":is_regression}, 
         pipeline='text-classification'
     ) 
