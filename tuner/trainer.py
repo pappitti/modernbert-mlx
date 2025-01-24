@@ -1,16 +1,18 @@
 import time
 import json
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple, List
 from textwrap import dedent
+from functools import partial
 
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers
 
 from mlx.nn.utils import average_gradients
-from mlx.utils import tree_flatten
+from mlx.utils import tree_flatten, tree_map
 
 from .datasets import Dataset
 
@@ -158,33 +160,64 @@ class Trainer:
         self.epoch = 0
         self.output_dir = Path(training_args.output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-
-        # Pre-compile the training step
-        self.loss_and_grad = nn.value_and_grad(self.model, self._compute_loss)
+        # Capture state that needs updating (random state for Dropout, etc.)
+        self.state = [self.model.state, self.optimizer.state, mx.random.state]
         
         # Enable gradient checkpointing if requested
         if training_args.grad_checkpoint:
             grad_checkpoint(model)
+
+        # Compile step function once
+        # @partial(mx.compile, inputs=self.state, outputs=self.state)
+        def step(batch, is_accumulating): 
+            # Get the loss function configured for training
+
+            loss_and_grad_fn = nn.value_and_grad(self.model, self._compute_loss)
+            loss, grads = loss_and_grad_fn(batch)
+            
+            # Scale the loss and gradients by accumulation steps
+            scale = 1.0 / self.args.gradient_accumulation_steps
+            scaled_loss = loss * scale
+            scaled_grads = tree_map(lambda g: g * scale if isinstance(g, mx.array) else g, grads)
+                    
+            # Only update when we're not accumulating
+            if not is_accumulating:
+                self.optimizer.update(self.model, scaled_grads)
+                
+            return scaled_loss, scaled_grads
+            
+        self._step = step
         
         # Log model type and config
         self.push_to_hub = training_args.push_to_hub
+       
         print(f"Training {model.__class__.__name__}")
+            
         self._save_config()
 
     def _compute_loss(self, batch_inputs): 
-        """Compute the loss for a single batch"""
+        """Compute the loss for training"""
         outputs = self.model(**batch_inputs)
-        return outputs["loss"]
+        loss = mx.mean(outputs["loss"])
+        return loss
     
     def _create_batches(self, dataset, batch_size, shuffle=False):
         """Create optimized batches with minimal Python overhead"""
-        indices = range(0, len(dataset), batch_size)
+        data_len = len(dataset)
+
+        # Create a shuffled copy of the dataset if needed
         if shuffle:
-            indices = mx.random.permutation(len(dataset))
+            # Shuffle the entire dataset first
+            indices = mx.random.permutation(data_len).tolist()
+            shuffled_data = [dataset.data[i] for i in indices]
+        else:
+            shuffled_data = dataset.data
             
-        for i in indices:
-            batch = dataset[i:i + batch_size]
-            yield self._prepare_batch(batch)
+        # Now split into batches
+        for start_idx in range(0, data_len, batch_size):
+            end_idx = min(start_idx + batch_size, data_len)
+            batch_data = shuffled_data[start_idx:end_idx]
+            yield self._prepare_batch(batch_data)
 
     def _prepare_batch(self, batch: List[Dict[str, Any]]) -> Dict[str, mx.array]:
         """
@@ -257,8 +290,6 @@ class Trainer:
     def train(self):
         """Main training loop."""
         print("Starting training...")
-        trainable_params = sum(p[1].size for p in tree_flatten(self.model.trainable_parameters()))
-        print(f"Trainable parameters: {trainable_params}")
         
         for epoch in range(self.args.num_train_epochs):
             self.epoch = epoch
@@ -269,33 +300,67 @@ class Trainer:
                 metrics = self.evaluate()
                 self._save_checkpoint(metrics)
 
+    def _check_weight_updates(self, params_before, params_after):
+        """Helper function to check if weights have been updated"""
+        total_diff = 0
+        for key in params_before:
+            if isinstance(params_before[key], mx.array):
+                diff = mx.abs(params_after[key] - params_before[key]).sum()
+                total_diff += diff.item()
+        return total_diff
+
     def _train_epoch(self):
         """Training logic for one epoch."""
         self.model.train()
         total_loss = 0
         n_steps = 0
         start_time = time.time()
+        accumulated_grads = None
+
+        # Get initial weights for a parameter to track
+        initial_params = {k: v.copy() for k, v in self.model.parameters().items() if isinstance(v, mx.array)}
         
         # Create batches from dataset
         for batch in self._create_batches(self.train_dataset, self.args.batch_size, shuffle=True):
-            # Combined forward and backward pass
-            (loss, _), grads = self.loss_and_grad(self.model, batch)
+            initial_state = [s.copy() if isinstance(s, mx.array) else s for s in self.state]
+            # Determine if we're still accumulating or ready to update
+            is_accumulating = (n_steps + 1) % self.args.gradient_accumulation_steps != 0
             
-            # Update with accumulated gradients
-            if (n_steps + 1) % self.args.gradient_accumulation_steps == 0:
-                grads = average_gradients(grads)
-                self.optimizer.update(self.model, grads)
-                mx.eval(self.model.parameters())  # Ensure updates are applied
+            # Forward and backward pass with scaled gradients
+            loss, grads = self._step(batch, is_accumulating)
+
+            mx.eval(self.model.parameters(), self.optimizer.state) 
             
-            # Logging with minimal overhead
-            if n_steps % self.args.logging_steps == 0:
-                elapsed = time.time() - start_time
-                print(f"Step {n_steps}: loss = {loss:.4f}, steps/sec = {n_steps/elapsed:.2f}")
-            
+            # Accumulate gradients
+            ### I never use the accumulated grads
+            if accumulated_grads is None:
+                accumulated_grads = grads
+            else:
+                accumulated_grads = tree_map(lambda x, y: x + y, accumulated_grads, grads)
+            # Update on accumulation boundary
+            if not is_accumulating:
+                accumulated_grads = None
+                
             total_loss += loss.item()
             n_steps += 1
+            self.global_step += 1
             
-        return total_loss / n_steps ### why
+            if n_steps % self.args.logging_steps == 0:
+                elapsed = time.time() - start_time
+                print(f"Step {self.global_step}: loss = {total_loss/n_steps:.4f}, steps/sec = {n_steps/elapsed:.2f}")
+                current_state = self.state
+                state_changed = any(
+                    isinstance(i, mx.array) and not mx.array_equal(i, c) 
+                    for i, c in zip(initial_state, current_state)
+                )
+                print(f"State changed: {state_changed}")
+            
+             # Check total weight change for epoch
+            final_params = {k: v.copy() for k, v in self.model.parameters().items() if isinstance(v, mx.array)}
+            total_weight_change = self._check_weight_updates(initial_params, final_params)
+            print(f"Total weight change for epoch: {total_weight_change}")
+            
+        return total_loss / n_steps ### placeholder if we want to use the average loss for anything
     
     def evaluate(self):
         """Evaluation loop."""
@@ -304,7 +369,8 @@ class Trainer:
         n_steps = 0
         
         for batch in self._create_batches(self.eval_dataset, self.args.eval_batch_size):
-            loss = self._compute_loss(self.model.parameters(), batch)
+            outputs = self.model(**batch)
+            loss = mx.mean(outputs["loss"])
             total_loss += loss.item()
             n_steps += 1
         metrics = {"eval_loss": total_loss / n_steps}
@@ -334,7 +400,8 @@ class Trainer:
         
         # Perform evaluation
         for batch in self._create_batches(self.eval_dataset, self.args.eval_batch_size):
-            loss = self._compute_loss(self.model.parameters(), batch)
+            outputs = self.model(**batch)
+            loss = mx.mean(outputs["loss"])
             total_loss += loss.item()
             n_steps += 1
         metrics = {"eval_loss": total_loss / n_steps}

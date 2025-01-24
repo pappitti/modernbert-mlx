@@ -46,7 +46,7 @@ def main():
         eval_batch_size=16,
         max_length= model.config.max_position_embeddings,
         num_train_epochs=3,
-        learning_rate=2e-4, ### 5e-5 
+        learning_rate=5e-5, ### 5e-5 
         weight_decay=0.01,
         gradient_accumulation_steps=1,
         eval_steps=500,
