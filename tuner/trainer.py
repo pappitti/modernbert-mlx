@@ -168,23 +168,23 @@ class Trainer:
             grad_checkpoint(model)
 
         # Compile step function once
-        # @partial(mx.compile, inputs=self.state, outputs=self.state)
+        @partial(mx.compile, inputs=self.state, outputs=self.state)
         def step(batch, is_accumulating): 
-            # Get the loss function configured for training
-
+            # Get the loss function 
             loss_and_grad_fn = nn.value_and_grad(self.model, self._compute_loss)
             loss, grads = loss_and_grad_fn(batch)
             
-            # Scale the loss and gradients by accumulation steps
-            scale = 1.0 / self.args.gradient_accumulation_steps
-            scaled_loss = loss * scale
-            scaled_grads = tree_map(lambda g: g * scale if isinstance(g, mx.array) else g, grads)
+             # Scale gradients if accumulating
+            if self.args.gradient_accumulation_steps > 1:
+                scale = 1.0 / self.args.gradient_accumulation_steps
+                loss = loss * scale
+                grads = tree_map(lambda g: g * scale if isinstance(g, mx.array) else g, grads)
                     
             # Only update when we're not accumulating
             if not is_accumulating:
-                self.optimizer.update(self.model, scaled_grads)
+                self.optimizer.update(self.model, grads)
                 
-            return scaled_loss, scaled_grads
+            return loss, grads
             
         self._step = step
         
@@ -198,8 +198,7 @@ class Trainer:
     def _compute_loss(self, batch_inputs): 
         """Compute the loss for training"""
         outputs = self.model(**batch_inputs)
-        loss = mx.mean(outputs["loss"])
-        return loss
+        return mx.mean(outputs["loss"])
     
     def _create_batches(self, dataset, batch_size, shuffle=False):
         """Create optimized batches with minimal Python overhead"""
@@ -300,14 +299,35 @@ class Trainer:
                 metrics = self.evaluate()
                 self._save_checkpoint(metrics)
 
-    def _check_weight_updates(self, params_before, params_after):
-        """Helper function to check if weights have been updated"""
-        total_diff = 0
-        for key in params_before:
-            if isinstance(params_before[key], mx.array):
-                diff = mx.abs(params_after[key] - params_before[key]).sum()
-                total_diff += diff.item()
-        return total_diff
+    # def track_training_state(self, step_number):
+    #     """Track actual changes in model parameters."""
+    #     # Get current parameters directly as MLX arrays
+    #     current_params = self.model.parameters()
+        
+    #     if not hasattr(self, '_last_parameter_values'):
+    #         # Initialize with the first set of parameters
+    #         self._last_parameter_values = {k: v for k, v in tree_flatten(current_params)}
+    #         mx.eval(list(self._last_parameter_values.values()))
+    #         return True
+        
+    #     # Get current flattened parameters
+    #     current_values = dict(tree_flatten(current_params))
+    #     mx.eval(list(current_values.values()))
+        
+    #     # Check for changes
+    #     changed = False
+    #     for k, v in current_values.items():
+    #         if k in self._last_parameter_values:
+    #             diff = mx.sum(mx.abs(v - self._last_parameter_values[k]))
+    #             if diff.item() > 1e-6:
+    #                 changed = True
+    #                 break
+        
+    #     # Update reference values
+    #     if changed or step_number % 10 == 0:
+    #         self._last_parameter_values = {k: v for k, v in current_values.items()}
+            
+    #     return changed
 
     def _train_epoch(self):
         """Training logic for one epoch."""
@@ -317,19 +337,17 @@ class Trainer:
         start_time = time.time()
         accumulated_grads = None
 
-        # Get initial weights for a parameter to track
-        initial_params = {k: v.copy() for k, v in self.model.parameters().items() if isinstance(v, mx.array)}
-        
         # Create batches from dataset
         for batch in self._create_batches(self.train_dataset, self.args.batch_size, shuffle=True):
-            initial_state = [s.copy() if isinstance(s, mx.array) else s for s in self.state]
+
             # Determine if we're still accumulating or ready to update
             is_accumulating = (n_steps + 1) % self.args.gradient_accumulation_steps != 0
             
             # Forward and backward pass with scaled gradients
             loss, grads = self._step(batch, is_accumulating)
 
-            mx.eval(self.model.parameters(), self.optimizer.state) 
+            mx.eval(self.model.parameters())
+            mx.eval(self.optimizer.state)
             
             # Accumulate gradients
             ### I never use the accumulated grads
@@ -340,6 +358,7 @@ class Trainer:
             # Update on accumulation boundary
             if not is_accumulating:
                 accumulated_grads = None
+                mx.eval(self.model.parameters()) #, self.optimizer.state
                 
             total_loss += loss.item()
             n_steps += 1
@@ -348,17 +367,8 @@ class Trainer:
             if n_steps % self.args.logging_steps == 0:
                 elapsed = time.time() - start_time
                 print(f"Step {self.global_step}: loss = {total_loss/n_steps:.4f}, steps/sec = {n_steps/elapsed:.2f}")
-                current_state = self.state
-                state_changed = any(
-                    isinstance(i, mx.array) and not mx.array_equal(i, c) 
-                    for i, c in zip(initial_state, current_state)
-                )
-                print(f"State changed: {state_changed}")
-            
-             # Check total weight change for epoch
-            final_params = {k: v.copy() for k, v in self.model.parameters().items() if isinstance(v, mx.array)}
-            total_weight_change = self._check_weight_updates(initial_params, final_params)
-            print(f"Total weight change for epoch: {total_weight_change}")
+                # state_changed = self.track_training_state(n_steps)
+                # print(f"State changed: {state_changed}")
             
         return total_loss / n_steps ### placeholder if we want to use the average loss for anything
     
