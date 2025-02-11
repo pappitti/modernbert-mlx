@@ -533,10 +533,44 @@ class ModelForSentenceTransformers(ModelForSentenceSimilarity):
     
 class ModelForZeroShotClassification(Model):
     """
+    NOT USED : THIS IS A PLACEHOLDER. THE ZERO-SHOT-CLASSIFICATION PIPELINE 
+    CURRENTLY USES THE MASKEDLM PIPELINE AS PER https://arxiv.org/html/2502.03793v2.
+
     Computes zero-shot classification probabilities for input sequences given labels.
     Other interprations of zero-shot classification, this one is closer to sentence similarity.
     Tokenized Labels or definitions must be provided in __call__.
     No hypothesis_templating in this implementation.
+
+    # Tokenize the input
+    tokens = tokenizer.encode(
+        text, 
+        return_tensors="mlx", 
+        padding=True, 
+        truncation=True, 
+        max_length= max_position_embeddings
+    )
+
+    if type(label_candidates) is dict:
+        label_defs = list(label_candidates.values())
+        label_keys = list(label_candidates.keys())
+    else:
+        label_defs = label_keys = label_candidates
+    encoded_labels = tokenizer._tokenizer(
+        label_defs, 
+        return_tensors="mlx", 
+        padding=True, 
+        truncation=True, 
+        max_length= max_position_embeddings
+    )
+
+    # Forward pass
+    outputs = model(
+        input_ids=tokens,
+        label_candidates=encoded_labels['input_ids'],
+        label_candidates_attention_mask=encoded_labels['attention_mask'],
+        multi_label=False, # returns probabilities if true, similarities if false
+        return_dict=True
+    )
     """
     def __init__(self, config):
         super().__init__(config)

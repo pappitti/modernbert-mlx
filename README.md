@@ -33,13 +33,13 @@ Uses the ModelForSentenceSimilarity class, which extends Model, and returns the 
 Uses the ModelForSentenceTransformers class, which extends ModelForSentenceSimilarity. The only difference is weight sanitization as sentence transformers parameters keys are specific.  
 See examples/sentencetransformers.py  
   
-- "zero-shot-classification" (WIP)  
-Uses the ModelForZeroShotClassification class, which extends Model, and returns probabilities of labels for the sequence. There are other interpretrations of what zero-shot classification means, notably classifications that require fixed labels. Not sure which approach is correct. More work needed. Here, labels must be provided in the config file as a list or as a dictionary {label:description} as a label_candidates parameter in the config file. 
-See examples/zeroshot.py 
-  
 - "masked-lm"  
-Uses the ModelForMaskedLM. Returns logits for all tokens in the input sequence. For now, filtering for the masked token and softmax are handled outside the pipeline (see tests_maskedlm.py). It probably makes sense to integrate this in the pipeline.  
+Uses the ModelForMaskedLM class. Returns logits for all tokens in the input sequence. For now, filtering for the masked token and softmax are handled outside the pipeline (see tests_maskedlm.py). It probably makes sense to integrate this in the pipeline.  
 See examples/maskedlm.py  
+  
+- "zero-shot-classification"  
+Uses the the ModelForMaskedLM class. See above. The reason for using this pipeline is a recent paper by Answer.ai showing that it was a great alternative to other approaches. (a ModelForZeroShotClassification class had also been prepared, which extends Model, and returns probabilities of labels for the sequence. There are other interpretrations of what zero-shot classification means, notably classifications that require fixed labels. Not sure which approach is correct. More work needed so the class is kept for future work even if it is not used. Here, labels must be provided in the config file as a list or as a dictionary {label:description} as a label_candidates parameter in the config file.) 
+See examples/zeroshot.py 
   
 - "text-classification"  
 Uses the ModelForSequenceClassification class. Returns probabilities of labels for the sequence. Classification can be a regression (untested for now), binary classification (untested for now) or multilabel classification. For multilabel the config file must contain an id2label dictionary. 
@@ -54,7 +54,7 @@ Running example file : `uv run python -m examples.raw_embeddings`
 - Current implementation has yielded encouraging results for masked LM tasks using in [this HF checkpoint](https://huggingface.co/answerdotai/ModernBERT-base). Only at inference
 - Embeddings and sentence similarity (incl. sentence transformers variants) tested for various models listed in examples/sentencetransformers.py notably [nomic modernbert-embed-base](https://huggingface.co/nomic-ai/modernbert-embed-base). Only at inference
 - text-classification tested for multi-label classification and regression with supportive results for various models listed in examples/textclassification.py. Single-label classification not tested yet. Only at inference  
-- Zero-shot classification tested with [nomic modernbert-embed-base](https://huggingface.co/nomic-ai/modernbert-embed-base). Not working for the moment    
+- Zero-shot classification tested with [answerdotai/ModernBERT-Large-Instruct](https://huggingface.co/answerdotai/ModernBERT-Large-Instruct). WIP    
 - ModelForTokenClassification is only a placeholder at this stage.
 
 ## Work in Progress on Utils

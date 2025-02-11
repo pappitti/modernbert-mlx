@@ -83,7 +83,9 @@ def _get_classes(config: dict, pipeline: Optional[str] = 'masked-lm'):
         return arch.ModelForSentenceTransformers, arch.ModelArgs
     
     if pipeline == "zero-shot-classification":
-        return arch.ModelForZeroShotClassification, arch.ModelArgs
+        return arch.ModelForMaskedLM, arch.ModelArgs
+        # using the MaskeLM pipeline for now (see models/modernbert.py comment for class ModelForZeroShotClassification)
+        # return arch.ModelForZeroShotClassification, arch.ModelArgs
     
     if pipeline == "sentence-similarity":
         return arch.ModelForSentenceSimilarity, arch.Model

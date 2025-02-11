@@ -1,3 +1,3 @@
-from examples.sentencetransformers import main
+from examples.zeroshot import main
 
 main()
