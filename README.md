@@ -58,7 +58,8 @@ Running example file : `uv run python -m examples.raw_embeddings`
 - ModelForTokenClassification is only a placeholder at this stage.
 
 ## Work in Progress on Utils
-The dataset handling leverages HuggingFace's [Datasets](https://huggingface.co/docs/datasets/index) but requires a lot more work to address all important usecases
+- The dataset handling leverages HuggingFace's [Datasets](https://huggingface.co/docs/datasets/index) but requires a lot more work to address all important usecases
+- Server uses a FastAPI server can be used. It has only been tested with zero-shot classification for now (both single prediction and batch prediction). Use with `uv run python -m utils.server`
 
 ## Next Steps
 - Continue work on training (PoC for sequence classification, still very preliminary)

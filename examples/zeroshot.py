@@ -31,11 +31,27 @@ def main():
     max_position_embeddings = getattr(model.config,"max_position_embeddings",512)
 
     # Prepare the input text
-    text_to_classify = "ModernBERT is a modernized bidirectional encoder-only Transformer model (BERT-style) pre-trained on 2 trillion tokens of English and code data with a native context length of up to 8,192 tokens"
+    # text_to_classify = "ModernBERT is a modernized bidirectional encoder-only Transformer model (BERT-style) pre-trained on 2 trillion tokens of English and code data with a native context length of up to 8,192 tokens"
 
     text_to_classify = "The aging of the population is the archetype of an unpleasant truth for mainstream media readers and for voters, which does not encourage anyone to put it on the table. Age pyramids, birth and fertility indicators, and celibacy rates in all developed countries indicate that the situation is worrying. Among these countries, some managed to stay on-track until about 10 years ago but they eventually fell into line."
 
-    text = f"""You will be given a text and categories to classify the text.\n\nTEXT: {text_to_classify}\n\nChoose the right category for the text from the following:\n{[f"{i} : {k} ({v})\n" for i,[k,v] in enumerate(label_candidates.items())] if label_candidates is dict else [f"{i} : {label}\n" for i,label in enumerate(label_candidates)]}\n\nANSWER: [MASK]"""
+    # text_to_classify = "The new MacBook Pro with M3 chip delivers exceptional performance and battery life."
+
+    if isinstance(label_candidates, dict):
+        categories = "\n".join([f"{i}: {k} ({v})" for i, (k, v) in enumerate(label_candidates.items())])
+    else:
+        categories = "\n".join([f"{i}: {label}" for i, label in enumerate(label_candidates)])
+
+    # Use in the f-string
+    text = f"""You will be given a text and categories to classify the text.
+
+        TEXT: {text_to_classify}
+
+        Read the text carefully and select the right category from the list. Only provide the index of the category:
+        {categories}
+
+        ANSWER: [unused0][MASK]
+    """
 
     # Tokenize the input
     tokens = tokenizer.encode(
