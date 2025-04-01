@@ -378,8 +378,6 @@ class ModernBertModel(nn.Module):
         # converting to model_dtype for scaled_dot_product_attention
         global_attention_mask = global_attention_mask.astype(model_dtype)
         sliding_window_mask = sliding_window_mask.astype(model_dtype)
-
-        print("dtypes", global_attention_mask.dtype, sliding_window_mask.dtype)
     
         return global_attention_mask, sliding_window_mask
 
