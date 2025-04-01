@@ -255,7 +255,7 @@ class ModernBertModel(nn.Module):
             ModernBertEncoderLayer(config, i) for i in range(config.num_hidden_layers)
         ]
         self.final_norm = nn.LayerNorm(config.hidden_size, eps=config.norm_eps, bias=config.norm_bias)
-        self.gradient_checkpointing = False ### TBC
+        self.gradient_checkpointing = False 
 
     def get_input_embeddings(self) -> ModernBertEmbeddings:
         return self.embeddings.tok_embeddings
@@ -279,11 +279,6 @@ class ModernBertModel(nn.Module):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        all_hidden_states = () if output_hidden_states else None
-        # all_attentions = () if output_attentions else None # should not be used with sdpa
-
-        # self.warn_if_padding_and_no_attention_mask(input_ids, attention_mask) ###  TODO : review padding strategy before removing this line
-
         batch_size, seq_len = input_ids.shape[:2]
 
         if attention_mask is None:
@@ -292,13 +287,18 @@ class ModernBertModel(nn.Module):
         if position_ids is None:
             position_ids = mx.arange(seq_len, dtype=mx.int32)[None, :]
 
+        hidden_states = self.embeddings(input_ids)
+        model_dtype = hidden_states.dtype
+
         # get attention mask and sliding window mask
         attention_mask, sliding_window_mask = self._update_attention_mask(
             attention_mask=attention_mask,
+            model_dtype=model_dtype
             # output_attentions=False ### should not be used with sdpa
         )
 
-        hidden_states = self.embeddings(input_ids)
+        all_hidden_states = () if output_hidden_states else None
+        # all_attentions = () if output_attentions else None # should not be used with sdpa
 
         for encoder_layer in self.layers:
             if output_hidden_states:
@@ -335,10 +335,12 @@ class ModernBertModel(nn.Module):
             # "attentions": all_attentions,
         }
     
-    def _update_attention_mask(self, attention_mask): ### move to base.py ??
+    def _update_attention_mask(self, attention_mask, model_dtype): ### move to base.py ??
+
         batch_size, seq_len = attention_mask.shape
+        neg_inf = -1e4
         
-        additive_mask = mx.where(attention_mask == 1, 0.0, -1e9)
+        additive_mask = mx.where(attention_mask == 1, 0.0, neg_inf)
         # (batch_size, seq_len) -> (batch_size, 1, 1, seq_len)
         additive_mask = additive_mask[:, None, None, :]
         
@@ -370,8 +372,14 @@ class ModernBertModel(nn.Module):
         sliding_window_mask = mx.where(
             window_mask,
             global_attention_mask,
-            float('-inf') ## if not broadcasted for some reason : float('-inf') * mx.ones_like(global_attention_mask)
+            neg_inf ## if not broadcasted for some reason : neg_inf * mx.ones_like(global_attention_mask)
         )
+
+        # converting to model_dtype for scaled_dot_product_attention
+        global_attention_mask = global_attention_mask.astype(model_dtype)
+        sliding_window_mask = sliding_window_mask.astype(model_dtype)
+
+        print("dtypes", global_attention_mask.dtype, sliding_window_mask.dtype)
     
         return global_attention_mask, sliding_window_mask
 

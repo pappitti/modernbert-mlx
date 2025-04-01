@@ -86,6 +86,8 @@ async def predict(request: PredictionRequest):
     model = model_info["model"]
 
     max_position_embeddings = getattr(model.config,"max_position_embeddings",512)
+
+    result=None
     
     if model_info["pipeline"] == "embedding":
         input_ids = tokenizer._tokenizer(
@@ -98,7 +100,7 @@ async def predict(request: PredictionRequest):
         outputs = model(input_ids)
         embeddings=outputs['embeddings'] # by default, output is returned as a dict. if not, outputs[0] is the pooled_output and outputs[1]
 
-        return {
+        result = {
             "embeddings":embeddings.tolist()
         }
     
@@ -129,7 +131,7 @@ async def predict(request: PredictionRequest):
     
         similarities = outputs['similarities'] # by default returned as a dictionary (use embeddings=outputs[1] otherwise)
 
-        return {
+        result =  {
             "similarities": similarities.tolist()
         }
     
@@ -146,7 +148,7 @@ async def predict(request: PredictionRequest):
             # Use in the f-string
             classification_input = f"""You will be given a text and categories to classify the text.
 
-                TEXT: {text}
+                {text}
 
                 Read the text carefully and select the right category from the list. Only provide the index of the category:
                 {categories}
@@ -193,9 +195,14 @@ async def predict(request: PredictionRequest):
             classification_result = [[tokenizer.decode([idx]), logit] for idx, logit in zip(top_indices.tolist(), top_probs.tolist())]
             batch_results.append(classification_result)
 
-        return {
+        result =  {
             "classification": batch_results
         }
+
+    mx.clear_cache()
+    gc.collect()  
+    
+    return result
 
 @app.get("/pipelines")
 async def list_pipelines():
