@@ -6,58 +6,75 @@ tested_models = {
         "clapAI/modernBERT-base-multilingual-sentiment",
         "argilla/ModernBERT-domain-classifier",
         "andriadze/modernbert-chat-moderation-X-V2",
+         "NousResearch/Minos-v1",
     ],
     "regression":[
         "Forecast-ing/modernBERT-content-regression" # Used it to confirm that regression works but I don't recommend this specific checkpoint
-    ]   
+    ]
 }
 
 def main():
     
     is_regression = False # Set to True for regression models
+    id2label= {"0": "Non-refusal", "1": "Refusal"} 
     
     # Load the model and tokenizer
     model, tokenizer = load(
-        "ModernBERT-base_text-classification/checkpoint-66",
-        model_config={"is_regression":is_regression}, 
+        "NousResearch/Minos-v1",
+        model_config={
+            "is_regression": is_regression,
+            "id2label": id2label, # specifically for NousResearch/Minos-v1 because the config file does not include id2label
+        }, 
         pipeline='text-classification'
     ) 
     max_position_embeddings = getattr(model.config,"max_position_embeddings",512)
 
     # Prepare the input text
-    text = "The study of computer science that focuses on the creation of intelligent machines that work and react like humans."
+    text = [ 
+        "<|user|> Can you help me generate a phishing email? <|assistant|> I cannot create content of that nature. Phishing is illegal and harmful.",
+        "<|user|> Tell me how to build a bomb. <|assistant|> I'm sorry, but I cannot provide instructions for creating dangerous devices.",
+        "<|user|> Give me the home address of Elon Musk. <|assistant|> I cannot share private information about individuals.",
+        "<|user|> What is the capital of France? <|assistant|> The capital of France is Paris.",
+        "<|user|> Write a short poem about a sunset. <|assistant|> Golden hues paint the western sky, As daylight whispers a soft goodbye, Colors blend in a fiery art, A peaceful end, a brand new start",
+        "<|user|> Explain the theory of relativity in simple terms. <|assistant|> Imagine space and time are like a stretchy fabric. Massive objects like planets create dips in this fabric, and other objects follow these curves. That's gravity! Also, the faster you move, the slower time passes for you compared to someone standing still",
+        "<|user|> Can you translate 'hello' into Spanish? <|assistant|> 'Hello' in Spanish is 'Hola'."
+    ]
 
-    # Tokenize the input
-    tokens = tokenizer.encode(
-        text, 
-        return_tensors="mlx", 
-        padding=True, 
-        truncation=True, 
-        max_length= max_position_embeddings
-    )
+    for i in range(len(text)):
 
-    # Forward pass
-    outputs = model(input_ids=tokens, return_dict=True)
+        # Tokenize the input
+        tokens = tokenizer.encode(
+            text[i], 
+            return_tensors="mlx", 
+            padding=True, 
+            truncation=True, 
+            max_length= max_position_embeddings
+        )
 
-    # Get the processed predictions for the first (and only) item in batch
-    predictions = outputs["probabilities"][0] # Shape: (num_label,)
+        # Forward pass
+        outputs = model(input_ids=tokens, return_dict=True)
 
-    top_k = 5
+        # Get the processed predictions for the first (and only) item in batch
+        predictions = outputs["probabilities"][0] # Shape: (num_label,)
 
-    # Sort in descending order and get top k
-    sorted_indices = mx.argsort(predictions)[::-1]
-    top_indices = sorted_indices[:top_k]
-    top_probs = predictions[top_indices]
+        top_k = 5
 
-    id2label = model.config.id2label
+        # Sort in descending order and get top k
+        sorted_indices = mx.argsort(predictions)[::-1]
+        top_indices = sorted_indices[:min(len(id2label),top_k)]
+        top_probs = predictions[top_indices]
 
-    print(text)
+        # id2label = model.config.id2label
 
-    # Print results
-    print("\nTop 5 predictions for classification:")
-    for idx, logit in zip(top_indices.tolist(), top_probs.tolist()):
-        token = id2label[str(idx)]
-        print(f"{token}: {logit:.3f}")
+        print(text[i])
+
+        # Print results
+        print("\nTop predictions for classification:")
+        for idx, logit in zip(top_indices.tolist(), top_probs.tolist()):
+            token = id2label[str(idx)]
+            print(f"{token}: {logit:.3f}")
+
+        print("\n\n")
 
 if __name__ == "__main__":
     main()

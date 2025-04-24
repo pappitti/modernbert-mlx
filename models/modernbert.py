@@ -9,9 +9,6 @@ from .base import BaseModelArgs, compute_similarity
 
 ### NOTE : removed all the attention_outputs (eager mode), may add it back later
 ### given no flash attention 2, padded/unpadded was also removed
-### TODO: 
-# review the padding strategy
-# review compiling opportunities
 
 @dataclass
 class ModelArgs(BaseModelArgs):
@@ -44,8 +41,6 @@ class ModelArgs(BaseModelArgs):
     output_hidden_states: bool = False 
     use_return_dict: bool = True 
     # output_attentions: bool = False # not relevant if we only use sdpa
-    # deterministic_flash_attn=False ## for torch only, to remove???
-    # reference_compile=None ## for torch only, to remove???
 
     ### pipeline args
     decoder_bias=True,
@@ -58,7 +53,6 @@ class ModelArgs(BaseModelArgs):
     is_regression: Optional[bool] = None
     label2id: Optional[Dict[str, int]] = None
     id2label: Optional[Dict[int, str]] = None
-    # label_candidates: Optional[Dict[str, Any]] = None
 
     @property
     def num_labels(self) -> int:
@@ -304,17 +298,6 @@ class ModernBertModel(nn.Module):
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
-            # if self.gradient_checkpointing and self.training:
-            #     ### already covered by trainer, delete after confirming 
-            #     layer_outputs = mx.checkpoint(
-            #         encoder_layer.__call__,
-            #         hidden_states,
-            #         attention_mask,
-            #         sliding_window_mask,
-            #         position_ids,
-            #         # output_attentions,
-            #     )
-            # else:
             layer_outputs = encoder_layer(
                 hidden_states,
                 attention_mask=attention_mask,
@@ -538,135 +521,135 @@ class ModelForSentenceTransformers(ModelForSentenceSimilarity):
                 sanitized_weights[new_key] = v
         return sanitized_weights
     
-class ModelForZeroShotClassification(Model):
-    """
-    NOT USED : THIS IS A PLACEHOLDER. THE ZERO-SHOT-CLASSIFICATION PIPELINE 
-    CURRENTLY USES THE MASKEDLM PIPELINE AS PER https://arxiv.org/html/2502.03793v2.
+# class ModelForZeroShotClassification(Model):
+#     """
+#     NOT USED : THIS IS A PLACEHOLDER. THE ZERO-SHOT-CLASSIFICATION PIPELINE 
+#     CURRENTLY USES THE MASKEDLM PIPELINE AS PER https://arxiv.org/html/2502.03793v2.
 
-    Computes zero-shot classification probabilities for input sequences given labels.
-    Other interprations of zero-shot classification, this one is closer to sentence similarity.
-    Tokenized Labels or definitions must be provided in __call__.
-    No hypothesis_templating in this implementation.
+#     Computes zero-shot classification probabilities for input sequences given labels.
+#     Other interprations of zero-shot classification, this one is closer to sentence similarity.
+#     Tokenized Labels or definitions must be provided in __call__.
+#     No hypothesis_templating in this implementation.
 
-    # Tokenize the input
-    tokens = tokenizer.encode(
-        text, 
-        return_tensors="mlx", 
-        padding=True, 
-        truncation=True, 
-        max_length= max_position_embeddings
-    )
+#     # Tokenize the input
+#     tokens = tokenizer.encode(
+#         text, 
+#         return_tensors="mlx", 
+#         padding=True, 
+#         truncation=True, 
+#         max_length= max_position_embeddings
+#     )
 
-    if type(label_candidates) is dict:
-        label_defs = list(label_candidates.values())
-        label_keys = list(label_candidates.keys())
-    else:
-        label_defs = label_keys = label_candidates
-    encoded_labels = tokenizer._tokenizer(
-        label_defs, 
-        return_tensors="mlx", 
-        padding=True, 
-        truncation=True, 
-        max_length= max_position_embeddings
-    )
+#     if type(label_candidates) is dict:
+#         label_defs = list(label_candidates.values())
+#         label_keys = list(label_candidates.keys())
+#     else:
+#         label_defs = label_keys = label_candidates
+#     encoded_labels = tokenizer._tokenizer(
+#         label_defs, 
+#         return_tensors="mlx", 
+#         padding=True, 
+#         truncation=True, 
+#         max_length= max_position_embeddings
+#     )
 
-    # Forward pass
-    outputs = model(
-        input_ids=tokens,
-        label_candidates=encoded_labels['input_ids'],
-        label_candidates_attention_mask=encoded_labels['attention_mask'],
-        multi_label=False, # returns probabilities if true, similarities if false
-        return_dict=True
-    )
-    """
-    def __init__(self, config):
-        super().__init__(config)
+#     # Forward pass
+#     outputs = model(
+#         input_ids=tokens,
+#         label_candidates=encoded_labels['input_ids'],
+#         label_candidates_attention_mask=encoded_labels['attention_mask'],
+#         multi_label=False, # returns probabilities if true, similarities if false
+#         return_dict=True
+#     )
+#     """
+#     def __init__(self, config):
+#         super().__init__(config)
         
-        # Store encoded label descriptions - can be used for caching to classify large datasets
-        self.label_embeddings = None
+#         # Store encoded label descriptions - can be used for caching to classify large datasets
+#         self.label_embeddings = None
     
-    def encode_labels(self, label_candidates, label_candidates_attention_mask):
-        """Encodes label descriptions into embeddings."""
+#     def encode_labels(self, label_candidates, label_candidates_attention_mask):
+#         """Encodes label descriptions into embeddings."""
         
-        ### TODO : build option to reuse cached label embeddings
-        # if self.label_embeddings is not None :
-        #     return
+#         ### TODO : build option to reuse cached label embeddings
+#         # if self.label_embeddings is not None :
+#         #     return
             
-        # Get embeddings for each label description
-        label_outputs = super().__call__(
-            input_ids=label_candidates,
-            attention_mask=label_candidates_attention_mask,
-            return_dict=True
-        )
-        self.label_embeddings = label_outputs["embeddings"]  # [num_labels, hidden_size]
+#         # Get embeddings for each label description
+#         label_outputs = super().__call__(
+#             input_ids=label_candidates,
+#             attention_mask=label_candidates_attention_mask,
+#             return_dict=True
+#         )
+#         self.label_embeddings = label_outputs["embeddings"]  # [num_labels, hidden_size]
     
-    def __call__(
-        self,
-        input_ids,
-        attention_mask: Optional[mx.array] = None,
-        label_candidates: Optional[mx.array] = None,
-        label_candidates_attention_mask: Optional[mx.array] = None,
-        multi_label: Optional[bool] = False,
-        position_ids: Optional[mx.array] = None,
-        labels: Optional[mx.array] = None,
-        return_dict: Optional[bool] = True,
-    ):
-        if label_candidates is None:
-            raise ValueError("label_candidates must be provided for zero-shot classification.")
+#     def __call__(
+#         self,
+#         input_ids,
+#         attention_mask: Optional[mx.array] = None,
+#         label_candidates: Optional[mx.array] = None,
+#         label_candidates_attention_mask: Optional[mx.array] = None,
+#         multi_label: Optional[bool] = False,
+#         position_ids: Optional[mx.array] = None,
+#         labels: Optional[mx.array] = None,
+#         return_dict: Optional[bool] = True,
+#     ):
+#         if label_candidates is None:
+#             raise ValueError("label_candidates must be provided for zero-shot classification.")
 
-        # Ensure we have label embeddings
-        self.encode_labels(label_candidates, label_candidates_attention_mask)
+#         # Ensure we have label embeddings
+#         self.encode_labels(label_candidates, label_candidates_attention_mask)
         
-        # Get embeddings for input batch
-        input_outputs = super().__call__(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            return_dict=True
-        )
-        batch_embeddings = input_outputs["embeddings"]  # [batch_size, hidden_size]
+#         # Get embeddings for input batch
+#         input_outputs = super().__call__(
+#             input_ids=input_ids,
+#             attention_mask=attention_mask,
+#             position_ids=position_ids,
+#             return_dict=True
+#         )
+#         batch_embeddings = input_outputs["embeddings"]  # [batch_size, hidden_size]
         
-        # Compute similarities between batch and all labels
-        # Results in [batch_size, num_labels]
-        similarities = compute_similarity(batch_embeddings, self.label_embeddings)
+#         # Compute similarities between batch and all labels
+#         # Results in [batch_size, num_labels]
+#         similarities = compute_similarity(batch_embeddings, self.label_embeddings)
         
-        # Convert to probabilities across labels
-        probs = mx.softmax(similarities, axis=-1)
+#         # Convert to probabilities across labels
+#         probs = mx.softmax(similarities, axis=-1)
 
-        loss = None
-        if labels is not None:
-            ### similarities range may not be wide enough for cross-entropy
-            ### add a scaling factor?
-            if len(labels.shape) == 1:
-                loss = nn.losses.cross_entropy(similarities, labels)
-            else:
-                # Convert one-hot to indices
-                label_indices = mx.argmax(labels, axis=-1)
-                loss = nn.losses.cross_entropy(similarities, label_indices)
+#         loss = None
+#         if labels is not None:
+#             ### similarities range may not be wide enough for cross-entropy
+#             ### add a scaling factor?
+#             if len(labels.shape) == 1:
+#                 loss = nn.losses.cross_entropy(similarities, labels)
+#             else:
+#                 # Convert one-hot to indices
+#                 label_indices = mx.argmax(labels, axis=-1)
+#                 loss = nn.losses.cross_entropy(similarities, label_indices)
             
-        if not return_dict:
-            return (loss, similarities if multi_label else probs, batch_embeddings)
+#         if not return_dict:
+#             return (loss, similarities if multi_label else probs, batch_embeddings)
             
-        return {
-            "loss": loss,
-            "output": similarities if multi_label else probs,  # [batch_size, num_labels]
-            "embeddings": batch_embeddings,  # [batch_size, hidden_size]
-        }
+#         return {
+#             "loss": loss,
+#             "output": similarities if multi_label else probs,  # [batch_size, num_labels]
+#             "embeddings": batch_embeddings,  # [batch_size, hidden_size]
+#         }
 
-    ### using same as sentence transformers for now
-    def sanitize(self, weights):
-        """Convert sentence transformer weights to ModernBERT format."""
-        sanitized_weights = {}
+#     ### using same as sentence transformers for now
+#     def sanitize(self, weights):
+#         """Convert sentence transformer weights to ModernBERT format."""
+#         sanitized_weights = {}
         
-        for k, v in weights.items():
-            if "position_ids" in k:
-                ### used this from another model, may need to change
-                # Remove unused position_ids
-                continue
-            else:
-                new_key = "model." + k
-                sanitized_weights[new_key] = v
-        return sanitized_weights
+#         for k, v in weights.items():
+#             if "position_ids" in k:
+#                 ### used this from another model, may need to change
+#                 # Remove unused position_ids
+#                 continue
+#             else:
+#                 new_key = "model." + k
+#                 sanitized_weights[new_key] = v
+#         return sanitized_weights
 
 
 class ModernBertPredictionHead(nn.Module):
