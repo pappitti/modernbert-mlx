@@ -53,6 +53,7 @@ class ModelArgs(BaseModelArgs):
     is_regression: Optional[bool] = None
     label2id: Optional[Dict[str, int]] = None
     id2label: Optional[Dict[int, str]] = None
+    pipeline_config: Optional[Dict[str, Any]] = None  # for Sequence Classification
 
     @property
     def num_labels(self) -> int:
@@ -66,8 +67,8 @@ class ModelArgs(BaseModelArgs):
         if self.is_regression:
             return 1
         
-        # if self.pipeline_config.get("binary_sigmoid", False):
-        #     return 1
+        if self.pipeline_config and self.pipeline_config.get("binary_sigmoid", False):
+            return 1
             
         if self.id2label is None:
             raise ValueError(
