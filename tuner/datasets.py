@@ -36,7 +36,7 @@ class Dataset:
 
         self._validate_data()
 
-        # if no labels were privded intiallu but labels were added via validation, create the mapping
+        # if labels were not provided intially but labels were added via validation, create the mapping
         if len(self.labels) > 0 and not self.label2id:
             self._load_label_mapping()
         

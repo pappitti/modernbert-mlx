@@ -10,7 +10,10 @@ tested_models = [
 def main():
     # Load the model and tokenizer
     model_name = "nomic-ai/modernbert-embed-base"  
-    model, tokenizer = load(model_name, pipeline="sentence-transformers") 
+    model, tokenizer = load(
+        model_name, 
+        pipeline="sentence-similarity" # or "sentence-transformers" if sentence-transformers model is used
+    ) # if the model_path file includes "config_sentence_transformers.json", the "sentence-transformers" pipeline will be identified automatically so no need to specify it
     max_position_embeddings = getattr(model.config,"max_position_embeddings",512)
     print(max_position_embeddings)
 
@@ -31,6 +34,11 @@ def main():
         "The aggregate of people living together in a more or less ordered community.",
     ]
 
+
+    # _tokenizer is used for batch processing. 
+    # Unlike the encode method, it does not return a list of tokens but a dictionary with the following keys that are used for the forward pass:
+    # - input_ids: The token IDs of the input text.
+    # - attention_mask: A mask to avoid performing attention on padding token indices.
     input_ids = tokenizer._tokenizer(
         texts, 
         return_tensors="mlx", 

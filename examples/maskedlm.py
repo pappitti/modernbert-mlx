@@ -7,7 +7,10 @@ tested_models = [
 
 def main():
     # Load the model and tokenizer
-    model, tokenizer = load("answerdotai/ModernBERT-base", pipeline='masked-lm')
+    model, tokenizer = load(
+        "answerdotai/ModernBERT-base", 
+        pipeline='masked-lm' # if the config file includes the architecture "ModernBertForMaskedLM", the pipeline will be identified automatically so no need to specify it
+    )
 
     # Prepare the input text
     text = "The capital of France is [MASK]."

@@ -11,7 +11,6 @@ import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers
 
-from mlx.nn.utils import average_gradients
 from mlx.utils import tree_flatten, tree_map
 
 from .datasets import Dataset
@@ -283,7 +282,6 @@ class Trainer:
         else:
             raise ValueError(f"Unsupported task type: {self.task_type}")
             
-        # print (f"batch inputs : inputs {model_inputs["input_ids"].shape}, attention_mask {model_inputs["attention_mask"].shape}, labels {model_inputs["labels"].shape}")
         return model_inputs
 
     def train(self):
@@ -298,36 +296,6 @@ class Trainer:
             if self.eval_dataset is not None:
                 metrics = self.evaluate()
                 self._save_checkpoint(metrics)
-
-    # def track_training_state(self, step_number):
-    #     """Track actual changes in model parameters."""
-    #     # Get current parameters directly as MLX arrays
-    #     current_params = self.model.parameters()
-        
-    #     if not hasattr(self, '_last_parameter_values'):
-    #         # Initialize with the first set of parameters
-    #         self._last_parameter_values = {k: v for k, v in tree_flatten(current_params)}
-    #         mx.eval(list(self._last_parameter_values.values()))
-    #         return True
-        
-    #     # Get current flattened parameters
-    #     current_values = dict(tree_flatten(current_params))
-    #     mx.eval(list(current_values.values()))
-        
-    #     # Check for changes
-    #     changed = False
-    #     for k, v in current_values.items():
-    #         if k in self._last_parameter_values:
-    #             diff = mx.sum(mx.abs(v - self._last_parameter_values[k]))
-    #             if diff.item() > 1e-6:
-    #                 changed = True
-    #                 break
-        
-    #     # Update reference values
-    #     if changed or step_number % 10 == 0:
-    #         self._last_parameter_values = {k: v for k, v in current_values.items()}
-            
-    #     return changed
 
     def _train_epoch(self):
         """Training logic for one epoch."""
@@ -367,10 +335,8 @@ class Trainer:
             if n_steps % self.args.logging_steps == 0:
                 elapsed = time.time() - start_time
                 print(f"Step {self.global_step}: loss = {total_loss/n_steps:.4f}, steps/sec = {n_steps/elapsed:.2f}")
-                # state_changed = self.track_training_state(n_steps)
-                # print(f"State changed: {state_changed}")
             
-        return total_loss / n_steps ### placeholder if we want to use the average loss for anything
+        return total_loss / n_steps # placeholder if we want to use the average loss for anything
     
     def evaluate(self):
         """Evaluation loop."""
@@ -442,7 +408,7 @@ class Trainer:
         
         # Save model weights
         ### sharding not necessary for small models
-        weights = dict(tree_flatten(self.model.trainable_parameters())) ### need more than just the model. (everthing included?)
+        weights = dict(tree_flatten(self.model.trainable_parameters())) ### need more than just the model. (everything included?)
         mx.save_safetensors(str(save_path / "model.safetensors"), weights, metadata={"format": "mlx"})
         
         # Save metrics
@@ -532,3 +498,27 @@ def upload_to_hub(
         multi_commits_verbose=True,
     )
     print(f"Upload successful, go to https://huggingface.co/{upload_repo} for details.")
+
+## COMMENTED OUT FOR NOW
+# def make_shards(weights: dict, max_file_size_gb: int = MAX_FILE_SIZE_GB) -> list:
+#     """
+#     Splits the weights into smaller shards.
+
+#     Args:
+#         weights (dict): Model weights.
+#         max_file_size_gb (int): Maximum size of each shard in gigabytes.
+
+#     Returns:
+#         list: List of weight shards.
+#     """
+#     max_file_size_bytes = max_file_size_gb << 30
+#     shards = []
+#     shard, shard_size = {}, 0
+#     for k, v in weights.items():
+#         if shard_size + v.nbytes > max_file_size_bytes:
+#             shards.append(shard)
+#             shard, shard_size = {}, 0
+#         shard[k] = v
+#         shard_size += v.nbytes
+#     shards.append(shard)
+#     return shards

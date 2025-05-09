@@ -6,7 +6,7 @@ tested_models = {
         "clapAI/modernBERT-base-multilingual-sentiment",
         "argilla/ModernBERT-domain-classifier",
         "andriadze/modernbert-chat-moderation-X-V2",
-         "NousResearch/Minos-v1",
+        "NousResearch/Minos-v1",
     ],
     "regression":[
         "Forecast-ing/modernBERT-content-regression" # Used it to confirm that regression works but I don't recommend this specific checkpoint
@@ -16,18 +16,17 @@ tested_models = {
 def main():
     
     is_regression = False # Set to True for regression models
-    id2label= {"0": "Non-refusal", "1": "Refusal"} 
     
     # Load the model and tokenizer
     model, tokenizer = load(
         "NousResearch/Minos-v1",
         model_config={
             "is_regression": is_regression,
-            "id2label": id2label, # specifically for NousResearch/Minos-v1 because the config file does not include id2label
         }, 
-        pipeline='text-classification'
+        pipeline='text-classification' # if the config file includes the architecture "ModernBertForSequenceClassification", the pipeline will be identified automatically so no need to specify it
     ) 
     max_position_embeddings = getattr(model.config,"max_position_embeddings",512)
+    id2label = model.config.id2label
 
     # Prepare the input text
     text = [ 
@@ -63,8 +62,6 @@ def main():
         sorted_indices = mx.argsort(predictions)[::-1]
         top_indices = sorted_indices[:min(len(id2label),top_k)]
         top_probs = predictions[top_indices]
-
-        # id2label = model.config.id2label
 
         print(text[i])
 

@@ -3,14 +3,22 @@ from utils.utils import load
 
 '''
 answerdotai/ModernBERT-base IS NOT TRAINED FOR SENTENCE SIMILARITY
-SEE SENTENCETRANSFORMERS.PY FOR MODELS TRAINED TO GENERATE EMBEDDINGS FOR SENTENCE TRANSFORMERS
+MODELS TRAINED TO GENERATE EMBEDDINGS FOR SENTENCE TRANSFORMERS WILL AUTOMATICALLY
+USE THE SENTENCE-TRANSFORMERS PIPELINE (SEE README)
 '''
+
+tested_models = [
+    "nomic-ai/modernbert-embed-base",
+    "answerdotai/ModernBERT-base"
+]
 
 def main():
     # Load the model and tokenizer
-    model, tokenizer = load("answerdotai/ModernBERT-base", pipeline="embeddings") 
+    model, tokenizer = load(
+        "answerdotai/ModernBERT-base", 
+        pipeline="embeddings", # models trained for sentence similarity will automatically use the "sentence-transformers" pipeline
+    ) 
     max_position_embeddings = getattr(model.config,"max_position_embeddings",512)
-    print(max_position_embeddings)
 
     def get_embedding(text, model, tokenizer):
         print(text)

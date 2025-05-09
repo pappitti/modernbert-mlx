@@ -11,7 +11,7 @@ app = FastAPI(title="ModernBERT Inference API",
               description="API for using ModerBERT",
               version="1.0.0")
 
-# TOOD
+# TODO
 # Model Unloading: Add an endpoint to unload specific models when they're not needed to save memory.
 # Separate Services: For complete isolation, run each pipeline type as a separate FastAPI service and use a lightweight API gateway to route requests.
 # Worker Pool Architecture: Implement a worker pool where each worker specializes in a specific pipeline, and a dispatcher routes requests to the appropriate worker.

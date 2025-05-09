@@ -20,7 +20,7 @@ from transformers import PreTrainedTokenizer
 # Local imports
 from .tokenizer_utils import TokenizerWrapper, load_tokenizer
 # Training imports 
-from tuner.utils import nparams #, load_adapters ### removing LORA given it does not really make sense for small models
+from tuner.utils import nparams #, load_adapters ### removing adapters for now
 
 PIPELINES = [
     "embeddings",
@@ -31,6 +31,11 @@ PIPELINES = [
     "zero-shot-classification",
     "sentence-similarity"
 ]
+
+HF_ARCH_TO_PIPELINE_MAPPING = {
+    "ModernBertForSequenceClassification": "text-classification",
+    "ModernBertForMaskedLM": "masked-lm",
+}
 
 MODEL_REMAPPING = {
     "mistral": "llama",  # mistral is compatible with llama
@@ -96,6 +101,7 @@ def _get_classes(config: dict, pipeline: Optional[str] = 'masked-lm'):
 def _initialize_missing_classifier_weights(weights, model_args):
     """Initialize weights only if they don't exist in the weights dictionary."""
     # For sequence classification, check and initialize classifier weights if needed
+    # TODO : improve initialization method
     if getattr(model_args,"num_labels") is not None:
         if "classifier.weight" not in weights:
             initializer_range = getattr(model_args,"initializer_range", 0.02)
@@ -197,8 +203,36 @@ def load_model(
         ValueError: If the model class or args class are not found or cannot be instantiated.
     """
 
+    # check if model_path/config_sentence_transformers.json exists
+    if (model_path / "config_sentence_transformers.json").exists():
+        sentence_transformers= True
+    else:
+        sentence_transformers = False
+
     config = load_config(model_path)
     config.update(model_config)
+
+    model_arch = config.get("architectures", None)
+    if model_arch is not None:
+        model_arch = HF_ARCH_TO_PIPELINE_MAPPING.get(model_arch[0], None)
+
+    if model_arch is not None:
+        if pipeline is None:
+            pipeline = model_arch
+            print(f"[INFO] Using pipeline {pipeline} based on model architecture {model_arch}")
+        elif pipeline != model_arch:
+                print(
+                    f"[INFO] Using pipeline {pipeline} based on user input, ignoring model architecture {model_arch}"
+                )
+
+    if sentence_transformers and pipeline!= "sentence-transformers":
+        if pipeline is None or pipeline == "sentence-similarity" or pipeline == "embeddings":
+            pipeline = "sentence-transformers"
+            print(f"[INFO] Using pipeline {pipeline}")
+        else:
+            raise ValueError(
+                f"Pipeline {pipeline} not supported for sentence-transformers models."
+            )
 
     weight_files = glob.glob(str(model_path / "model*.safetensors"))
 
@@ -299,82 +333,6 @@ def fetch_from_hub(
     return model, config, tokenizer
 
 
-# def make_shards(weights: dict, max_file_size_gb: int = MAX_FILE_SIZE_GB) -> list:
-#     """
-#     Splits the weights into smaller shards.
-
-#     Args:
-#         weights (dict): Model weights.
-#         max_file_size_gb (int): Maximum size of each shard in gigabytes.
-
-#     Returns:
-#         list: List of weight shards.
-#     """
-#     max_file_size_bytes = max_file_size_gb << 30
-#     shards = []
-#     shard, shard_size = {}, 0
-#     for k, v in weights.items():
-#         if shard_size + v.nbytes > max_file_size_bytes:
-#             shards.append(shard)
-#             shard, shard_size = {}, 0
-#         shard[k] = v
-#         shard_size += v.nbytes
-#     shards.append(shard)
-#     return shards
-
-
-# def save_weights( ### handled in the trainer
-#     save_path: Union[str, Path],
-#     weights: Dict[str, Any],
-#     *,
-#     donate_weights: bool = False,
-# ) -> None:
-#     """Save model weights into specified directory."""
-#     if isinstance(save_path, str):
-#         save_path = Path(save_path)
-#     save_path.mkdir(parents=True, exist_ok=True)
-
-#     shards = make_shards(weights)
-#     shards_count = len(shards)
-#     shard_file_format = (
-#         "model-{:05d}-of-{:05d}.safetensors"
-#         if shards_count > 1
-#         else "model.safetensors"
-#     )
-
-#     total_size = sum(v.nbytes for v in weights.values())
-#     index_data = {"metadata": {"total_size": total_size}, "weight_map": {}}
-
-#     # Write the weights and make sure no references are kept other than the
-#     # necessary ones
-#     if donate_weights:
-#         weights.clear()
-#         del weights
-
-#     for i in range(len(shards)):
-#         shard = shards[i]
-#         shards[i] = None
-#         shard_name = shard_file_format.format(i + 1, shards_count)
-#         shard_path = save_path / shard_name
-
-#         mx.save_safetensors(str(shard_path), shard, metadata={"format": "mlx"})
-
-#         for weight_name in shard.keys():
-#             index_data["weight_map"][weight_name] = shard_name
-#         del shard
-
-#     index_data["weight_map"] = {
-#         k: index_data["weight_map"][k] for k in sorted(index_data["weight_map"])
-#     }
-
-#     with open(save_path / "model.safetensors.index.json", "w") as f:
-#         json.dump(
-#             index_data,
-#             f,
-#             indent=4,
-#         )
-
-
 def quantize_model(
     model: nn.Module,
     config: dict,
@@ -425,30 +383,7 @@ def quantize_model(
 
     return quantized_weights, quantized_config
 
-
-# def save_config( ### handled in the trainer
-#     config: dict,
-#     config_path: Union[str, Path],
-# ) -> None:
-#     """Save the model configuration to the ``config_path``.
-
-#     The final configuration will be sorted before saving for better readability.
-
-#     Args:
-#         config (dict): The model configuration.
-#         config_path (Union[str, Path]): Model configuration file path.
-#     """
-#     # Clean unused keys
-#     config.pop("_name_or_path", None)
-
-#     # sort the config for better readability
-#     config = dict(sorted(config.items()))
-
-#     # write the updated config to the config_path (if provided)
-#     with open(config_path, "w") as fid:
-#         json.dump(config, fid, indent=4)
-
-
+### Conversion should not be needed if we work with safetensors
 # def convert(
 #     hf_path: str,
 #     mlx_path: str = "mlx_model",
