@@ -24,7 +24,7 @@ model, tokenizer = load("answerdotai/ModernBERT-base", pipeline='masked-lm')
 If no pipeline is provided, information from the model repo will be used to infer a pipeline:  
  - if config_sentence_transformers.json exists, pipeline will automatically be set to "sentence-transformers"
  - if model architecture in config file is ModernBertForSequenceClassification, pipeline will automatically be set to "text-classification" 
- - if model architecture in config file is ModernBertForMaskedLM, pipeline will automatically be set to "masked-lm" 
+ - if model architecture in config file is ModernBertForMaskedLM, pipeline will automatically be set to "masked-lm"  
 If there is no match, the pipeline defaults to masked-lm (original modernBERT model).  
 
 ### Batch processing 
@@ -56,7 +56,7 @@ outputs = model(
 Uses the Model class. Returns the pooled, unnormalized embeddings of the input sequence. Pooling strategy (CLS or mean) is defined by config file. Note that sentence transformers models will automatically switch to the "sentence-transformers" pipeline.  
 See examples/raw_embeddings.py  
   
-- "sentence-similarity" and "sentence-transformers" 
+- "sentence-similarity" and "sentence-transformers"  
 "sentence-similarity" uses the ModelForSentenceSimilarity class, which extends Model, and returns a dictionary with the embeddings and similarity matrix, using cosine similarity, between input sequences and reference sequences.  
 "sentence-transformers" uses the ModelForSentenceTransformers class, which extends ModelForSentenceSimilarity. The only difference is weight sanitization as sentence transformers parameters keys are specific.  
 See examples/sentencesimilarity.py  
