@@ -96,9 +96,9 @@ Running example file : `uv run python -m examples.raw_embeddings` or if the venv
 - Continue work on training (PoC for sequence classification, still very preliminary)
 - train classifiers and sentence embeddings model to check Model, ModelForSentenceTransformers and ModelForTokenClassification
 - write docs
-- add other models that are relevant for these tasks (stella, bert, xml-roberta...)
+- add other models that are relevant for these tasks (bert, xml-roberta, qwen3-embed...)
 
 ## Inspiration
 - [transformers](https://github.com/huggingface/transformers/blob/main/src/transformers/models/modernbert/modular_modernbert.py), instrumental to this project
 - [MLX Examples](https://github.com/ml-explore/mlx-examples) by Apple, is the source of the utils for this project (see licence)
-- [mlx-embeddings](https://github.com/Blaizzy/mlx-embeddings) by Prince Canuma whose project, supporting BERT and xml-roberta, has been more than helpful to get started with this one. I've worked on BERT and xml-roberta in a [fork of this project](https://github.com/pappitti/mlx-embeddings). Plan is to add the stella architecture there too.     
+- [mlx-embeddings](https://github.com/Blaizzy/mlx-embeddings) by Prince Canuma whose project, supporting BERT and xml-roberta, has been more than helpful to get started with this one. I've worked on BERT and xml-roberta in a [fork of this project](https://github.com/pappitti/mlx-embeddings). Add the Qwen3-embed architecture there too.     
