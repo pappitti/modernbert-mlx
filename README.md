@@ -2,9 +2,9 @@
 
 Implementation of [ModernBERT](https://arxiv.org/abs/2412.13663) in MLX  
 
-🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨
+🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨  
 ModernBERT-MLX is no longer maintained and has been superseded by [mlx-raclate](https://github.com/pappitti/mlx-raclate), which (**R**etrieval **A**nd **C**lassification including **LATE** interaction). 
-`mlx-raclate` is a versatile library built on Apple's [MLX](https://github.com/ml-explore/mlx) framework. It provides a unified interface to **train** and **run** classifiers and embedding models - including ModernBERT and Late Interaction (ColBERT-style) models - natively on macOS.
+`mlx-raclate` is a versatile library built on Apple's [MLX](https://github.com/ml-explore/mlx) framework. It provides a unified interface to **train** and **run** classifiers and embedding models - including ModernBERT and Late Interaction (ColBERT-style) models - natively on macOS.  
 🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨
 
 ## Installation
